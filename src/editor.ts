@@ -27,6 +27,11 @@ import {
   type TransitionName,
 } from "./presentation-options.js";
 import { HIGHLIGHT_RUNTIME } from "./highlights.js";
+import { HTML_SLIDES_RUNTIME } from "./html-slides.js";
+import { SLIDE_PANEL_CSS, SLIDE_PANEL_MARKUP, SLIDE_PANEL_RUNTIME } from "./slide-panel.js";
+import { INSPECT_BUTTON, INSPECT_CRUMBS, INSPECT_CSS, INSPECT_LAYER, INSPECT_RUNTIME } from "./inspect.js";
+import { CHAT_KIT_RUNTIME } from "./chat-kit.js";
+import { UPLOAD_ACCEPT } from "./folder.js";
 
 /** A document the editor is backed by: a local file or a fetched URL. */
 export interface EditorFileInfo {
@@ -37,6 +42,10 @@ export interface EditorFileInfo {
   writable: boolean;
   /** The server watches the file and pings /__events on external changes. */
   watched: boolean;
+  /** Claude Code is available to edit the file from the chat panel. */
+  chat?: boolean;
+  /** The file's folder, by name: the files menu opens its other decks and copies uploads into it. */
+  folder?: string;
 }
 
 function bootstrapJson(
@@ -421,6 +430,9 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   letter-spacing: 0.05em;
   pointer-events: none;
 }
+[data-folder="on"] #pane-edit.is-dropping::after {
+  content: 'drop .html, .md, or images to copy them into this folder';
+}
 
 /* ── Preview ──────────────────────────────────────────────────────────── */
 #prev-head {
@@ -514,6 +526,31 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   border-left-color: var(--accent);
 }
 .menu__pop--template button.is-on .menu__name { color: var(--accent); }
+
+/* The files menu: the decks beside the opened file, in file mode only. Its
+   button carries the file's name, standing in for the read-only name box. */
+#files-wrap { display: none; }
+[data-folder="on"] #files-wrap { display: inline-flex; }
+[data-folder="on"] #docname { display: none; }
+#files-label { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 1300px) {
+  #files-label { max-width: 150px; }
+}
+.menu__pop--files {
+  left: 0;
+  right: auto;
+  min-width: 340px;
+  max-width: min(520px, calc(100vw - 32px));
+  max-height: min(70vh, 560px);
+  overflow-y: auto;
+}
+.menu__pop--files .menu__name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menu__pop--files .menu__hint { flex: 0 0 auto; }
+.menu__pop--files button.is-on { background: var(--accent-soft); border-left-color: var(--accent); }
+.menu__pop--files button.is-on .menu__name { color: var(--accent); }
+#files-list { display: flex; flex-direction: column; }
+.files-empty { padding: 8px 10px; font-size: 11.5px; line-height: 1.5; color: var(--overlay1); }
+.files-foot { display: flex; flex-direction: column; margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--surface0); }
 
 .seg { display: flex; border: 1px solid var(--surface0); border-radius: 7px; overflow: hidden; }
 .seg button { font-size: 11px; padding: 3px 10px; color: var(--overlay1); }
@@ -1130,12 +1167,201 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .start-card__url input:focus { border-color: var(--accent); outline: none; }
 .start-card__url button { flex: none; }
 
+/* ── Claude chat ──────────────────────────────────────────────────────────
+   A third column, only offered when the editor is backed by a file and
+   Claude Code is on the machine. Edits come back through the file watcher,
+   so the panel itself only has to show the conversation. */
+#btn-chat { display: none; }
+[data-chat="on"] #btn-chat { display: inline-flex; }
+#btn-chat.is-on { border-color: var(--accent); color: var(--text); background: var(--accent-soft); }
+
+#pane-chat {
+  display: none;
+  flex: 0 0 360px;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--mantle);
+  border-left: 1px solid var(--surface0);
+}
+#pane-chat.is-on { display: flex; }
+
+#chat-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--surface0);
+}
+#chat-title { font-weight: 600; color: var(--text); }
+#chat-file { color: var(--overlay1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.chat-link {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--overlay1);
+  padding: 3px 7px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+.chat-link:hover { color: var(--text); border-color: var(--surface1); }
+#chat-close { font-size: 15px; line-height: 1; }
+
+#chat-log {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+}
+.chat-msg {
+  font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--subtext1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.chat-msg--user {
+  align-self: flex-end;
+  max-width: 88%;
+  padding: 7px 10px;
+  color: var(--text);
+  background: var(--surface0);
+  border-radius: 9px 9px 2px 9px;
+}
+.chat-msg--err { color: var(--red); }
+.chat-tool { font-size: 11px; color: var(--overlay1); }
+.chat-tool--edit { color: var(--green); }
+.chat-meta { font-size: 10px; color: var(--overlay0); letter-spacing: 0.04em; }
+.chat-empty { font-size: 12px; line-height: 1.6; color: var(--overlay1); }
+.chat-empty button {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 6px 9px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--subtext0);
+  border: 1px solid var(--surface0);
+  border-radius: 7px;
+}
+.chat-empty button:hover { border-color: var(--accent); color: var(--text); }
+#pane-chat.is-busy #chat-log::after {
+  content: 'working…';
+  font-size: 11px;
+  color: var(--accent);
+  animation: blink 1.1s step-start infinite;
+}
+
+#chat-foot { flex: 0 0 auto; padding: 10px 12px 12px; border-top: 1px solid var(--surface0); }
+#chat-input {
+  display: block;
+  width: 100%;
+  min-height: 64px;
+  max-height: 40vh;
+  padding: 8px 10px;
+  font: inherit;
+  font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--crust);
+  border: 1px solid var(--surface1);
+  border-radius: 8px;
+  outline: none;
+  resize: vertical;
+}
+#chat-input:focus { border-color: var(--accent); }
+#chat-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+#chat-note { flex: 1 1 auto; font-size: 10px; line-height: 1.45; color: var(--overlay0); }
+
+/* What the message went with, under it: "slide 5 · h2.title". */
+.chat-tag { align-self: flex-end; margin-top: -5px; font-size: 10px; color: var(--overlay0); }
+.chat-sys {
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--overlay1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 6px 9px;
+  border-left: 2px solid var(--surface1);
+}
+.chat-sys b { color: var(--subtext1); font-weight: 600; }
+
+/* Claude asked back: its likely answers, one click each. */
+.chat-choices { display: flex; flex-wrap: wrap; gap: 6px; }
+.chat-choices button {
+  max-width: 100%;
+  padding: 5px 10px;
+  font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
+  font-size: 12px;
+  text-align: left;
+  color: var(--subtext0);
+  border: 1px solid var(--accent-line, var(--surface1));
+  border-radius: 14px;
+}
+.chat-choices button:hover:not(:disabled) { border-color: var(--accent); color: var(--text); background: var(--accent-soft); }
+.chat-choices button:disabled { opacity: 0.45; cursor: default; }
+.chat-choices button.is-picked { opacity: 1; border-color: var(--accent); color: var(--text); }
+
+/* What a turn changed, and its undo. */
+.chat-turn { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-size: 11px; color: var(--overlay1); }
+.chat-turn .chat-slide {
+  padding: 1px 6px;
+  font-size: 11px;
+  color: var(--green);
+  border: 1px solid color-mix(in srgb, var(--green) 40%, transparent);
+  border-radius: 5px;
+}
+.chat-turn .chat-slide:hover { background: color-mix(in srgb, var(--green) 14%, transparent); }
+.chat-turn .chat-undo { margin-left: auto; padding: 1px 8px; font-size: 11px; color: var(--subtext0); border: 1px solid var(--surface1); border-radius: 5px; }
+.chat-turn .chat-undo:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+.chat-turn .chat-undo:disabled { opacity: 0.5; cursor: default; }
+.chat-turn.is-undone .chat-slide { color: var(--overlay0); border-color: var(--surface1); text-decoration: line-through; }
+
+/* Slash commands, as in Claude Code: type / for the list. */
+#chat-foot { position: relative; }
+#chat-menu {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(100% - 6px);
+  z-index: 5;
+  display: none;
+  padding: 4px;
+  background: var(--mantle);
+  border: 1px solid var(--surface1);
+  border-radius: 8px;
+  box-shadow: var(--shadow-md, 0 8px 24px rgba(0, 0, 0, 0.28));
+}
+#chat-menu.is-on { display: block; max-height: min(320px, 50vh); overflow-y: auto; }
+.chat-cmd-hint { padding: 4px 8px; font-size: 11px; color: var(--overlay1); }
+.chat-cmd-hint b { font-family: var(--font-mono, ui-monospace, monospace); font-weight: 600; color: var(--subtext1); }
+
+/* /look: the picture Claude was sent, under the message. */
+.chat-look { flex: 0 0 auto; align-self: flex-end; display: block; width: 78%; margin-top: -2px; border: 1px solid var(--surface1); border-radius: 6px; overflow: hidden; }
+.chat-look img { display: block; width: 100%; height: auto; }
+.chat-look:hover { border-color: var(--accent); }
+#chat-model.is-set { color: var(--accent); border-color: var(--accent-line, var(--surface1)); }
+.chat-cmd { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 5px 8px; text-align: left; border-radius: 5px; }
+.chat-cmd.is-active { background: var(--accent-soft); }
+.chat-cmd__name { flex: 0 0 auto; font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; color: var(--text); }
+.chat-cmd__args { color: var(--overlay1); }
+.chat-cmd__help { flex: 1 1 auto; min-width: 0; font-size: 11px; color: var(--overlay1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+${SLIDE_PANEL_CSS}
+
+${INSPECT_CSS}
+
 /* ── Narrow screens ───────────────────────────────────────────────────── */
 @media (max-width: 900px) {
   #panes { flex-direction: column; }
   #pane-edit { flex: 1 1 50%; width: auto !important; min-height: 0; }
   #pane-prev { flex: 1 1 50%; min-height: 0; }
   #divider { display: none; }
+  #pane-chat { flex: 0 0 40%; border-left: 0; border-top: 1px solid var(--surface0); }
 }
   </style>
 </head>
@@ -1145,6 +1371,19 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
     <span id="brand">deckrun<span class="caret"></span></span>
     <input id="docname" value="deck" spellcheck="false" title="Deck name, also the download filename">
     <button class="btn" id="btn-decks" title="Switch between the decks in this browser">decks <span id="deck-count">1</span> <kbd>Cmd O</kbd></button>
+    <span class="menu" id="files-wrap">
+      <button class="btn" id="btn-files" aria-haspopup="true" aria-expanded="false" title="Open another deck from this folder, or copy files into it"><span id="files-label">files</span> <span class="menu__chev">&#9662;</span></button>
+      <div class="menu__pop menu__pop--files" id="files-menu">
+        <div class="menu-section__title" id="files-folder">this folder</div>
+        <div id="files-list"></div>
+        <div class="files-foot">
+          <button id="files-upload">
+            <span class="menu__name">upload&hellip;</span>
+            <span class="menu__hint">copy .html, .md, or images into this folder</span>
+          </button>
+        </div>
+      </div>
+    </span>
     <span class="spacer"></span>
     <span id="topbar-right">
     <button class="btn" id="btn-guide" title="Everything you can put on a slide">guide <kbd>Cmd /</kbd></button>
@@ -1208,6 +1447,8 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
         <div class="ff-foot">Code keeps the theme's monospace face.</div>
       </div>
     </span>
+    ${INSPECT_BUTTON}
+    <button class="btn" id="btn-chat" title="Ask Claude to edit this file">claude <kbd>Cmd J</kbd></button>
     <button class="btn btn--primary" id="btn-present" title="Open the real deck in a new tab">present <kbd>Cmd Enter</kbd></button>
     </span>
   </header>
@@ -1246,8 +1487,28 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
         <div id="notes__label">speaker notes</div>
         <div id="notes__text"></div>
       </div>
-      <iframe id="frame-html" title="HTML doc preview"></iframe>
+      ${SLIDE_PANEL_MARKUP}
     </section>
+
+    <aside id="pane-chat" aria-label="Claude chat">
+      <div id="chat-head">
+        <span id="chat-title">claude</span>
+        <span id="chat-file"></span>
+        <span class="spacer"></span>
+        <button class="chat-link" id="chat-model" title="The model Claude uses here; click to change (/model)">default</button>
+        <button class="chat-link" id="chat-new" title="Forget this conversation and start a new one">new chat</button>
+        <button class="chat-link" id="chat-close" title="Close the chat">&times;</button>
+      </div>
+      <div id="chat-log" aria-live="polite"></div>
+      <div id="chat-foot">
+        <div id="chat-menu" role="listbox" aria-label="Commands"></div>
+        <textarea id="chat-input" rows="3" spellcheck="false" placeholder="Ask for a change to this slide · / for commands"></textarea>
+        <div id="chat-row">
+          <span id="chat-note">Your message and this file go to Claude through your Claude Code login.</span>
+          <button class="btn btn--primary" id="chat-send">send</button>
+        </div>
+      </div>
+    </aside>
   </main>
 
   <footer id="statusbar">
@@ -1255,6 +1516,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
     <span id="words">0 words</span>
     <span id="chip-slides">0 slides</span>
     <span id="save-state"></span>
+    ${INSPECT_CRUMBS}
     <span id="follow-chip" class="hidden" title="The editor is mirroring the presented deck. Click to stop following.">following deck &middot; <b id="follow-slide">1</b></span>
     <span id="tipbar">
       <span class="tag">tip</span>
@@ -1262,7 +1524,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
       <button id="tip-prev" title="Previous tip">&#8249;</button>
       <button id="tip-next" title="Next tip">&#8250;</button>
     </span>
-    <span>local only, nothing is uploaded</span>
+    <span id="local-note">local only, nothing is uploaded</span>
   </footer>
 </div>
 
@@ -1364,11 +1626,17 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 </div>
 
 <div id="toasts"></div>
+${INSPECT_LAYER}
 <input type="file" id="file-any" accept=".md,.markdown,text/markdown,text/plain,.html,.htm,text/html" hidden>
+<input type="file" id="file-upload" accept="${UPLOAD_ACCEPT}" multiple hidden>
 
 <script type="application/json" id="bootstrap">${bootstrapJson(theme, fonts, template, transition, file)}</script>
 <script>
 ${HIGHLIGHT_RUNTIME}
+${HTML_SLIDES_RUNTIME}
+${SLIDE_PANEL_RUNTIME}
+${INSPECT_RUNTIME}
+${CHAT_KIT_RUNTIME}
 </script>
 <script>
 (function () {
@@ -1383,6 +1651,10 @@ ${HIGHLIGHT_RUNTIME}
   // library: content comes from /__file, edits save back through it, and
   // external changes on disk arrive over /__events.
   var FILE = D.file || null;
+  // Every request about the file names it, so a tab keeps working on its
+  // own deck after another tab opens a different one from the folder.
+  var FILE_Q = FILE && FILE.writable ? '?file=' + encodeURIComponent(FILE.name) : '';
+  var FOLDER = !!(FILE && FILE.folder);
 
   var K = {
     index:   'deckrun.decks.v1',
@@ -1396,6 +1668,8 @@ ${HIGHLIGHT_RUNTIME}
     split:   'deckrun.split.v1',
     mode:    'deckrun.mode.v1',
     nudge:   'deckrun.nudges.v1',
+    chat:    'deckrun.chat.v1',
+    chatModel: 'deckrun.chat-model.v1',
     // Superseded by the deck library, read once to migrate.
     oldDoc:  'presentmd.doc.v1',
     oldName: 'presentmd.name.v1'
@@ -1582,6 +1856,7 @@ ${HIGHLIGHT_RUNTIME}
     state.kind = kind === 'html' ? 'html' : 'markdown';
     document.documentElement.dataset.docKind = state.kind;
     paintExportMenu();
+    if (inspect) inspect.reset();
   }
 
   // ── Themes ─────────────────────────────────────────────────────────────
@@ -1630,6 +1905,10 @@ ${HIGHLIGHT_RUNTIME}
   var palette = $('palette'), palInput = $('pal-input'), palList = $('pal-list');
   var guide = $('guide'), guideBody = $('guide-body');
   var srcHtml = $('src-html'), frameHtml = $('frame-html');
+  var slidePanel = null;
+  var inspect = null;
+  // The Markdown preview's source map: { src, slides }, from the parse that drew it.
+  var mdMap = null;
 
   // ── State ──────────────────────────────────────────────────────────────
   var state = {
@@ -1892,8 +2171,8 @@ ${HIGHLIGHT_RUNTIME}
   // ── Slide map, mirroring the server-side split ─────────────────────────
   var SEP = /\\r?\\n[ \\t]*---[ \\t]*\\r?\\n/g;
 
-  function slideMap() {
-    var text = src.value, spans = [], last = 0, m;
+  function slideMap(of) {
+    var text = of === undefined ? src.value : of, spans = [], last = 0, m;
     SEP.lastIndex = 0;
     while ((m = SEP.exec(text)) !== null) {
       spans.push([last, m.index]);
@@ -1934,6 +2213,7 @@ ${HIGHLIGHT_RUNTIME}
   function post(msg) {
     if (!state.frameReady) return;
     frame.contentWindow.postMessage(msg, '*');
+    if (inspect) inspect.refresh();
   }
 
   function pushFrame() {
@@ -1964,6 +2244,8 @@ ${HIGHLIGHT_RUNTIME}
   }
 
   function renderCounts() {
+    // The Markdown preview frame reports in even while an HTML doc is open.
+    if (state.kind === 'html') { renderHtmlCounts(); return; }
     var n = state.slides.length;
     elChipSlides.textContent = n + (n === 1 ? ' slide' : ' slides');
     elCount.textContent = 'slide ' + (n ? state.index + 1 : 0) + ' / ' + n;
@@ -2014,19 +2296,21 @@ ${HIGHLIGHT_RUNTIME}
   //    is byte-for-byte what deckrun file.md renders. ───────────────
   function refresh() {
     var mine = ++state.seq;
+    var sent = src.value;
     if (state.inflight) state.inflight.abort();
     state.inflight = new AbortController();
 
     fetch('/__parse', {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-      body: src.value,
+      body: sent,
       signal: state.inflight.signal
     })
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (mine !== state.seq) return;
         state.slides = data.slides || [];
+        mdMap = { src: sent, slides: data.map || [] };
         state.notes = data.notes || [];
         if (state.index >= state.slides.length) state.index = Math.max(0, state.slides.length - 1);
         pushFrame();
@@ -2041,11 +2325,14 @@ ${HIGHLIGHT_RUNTIME}
 
   // ── Autosave ───────────────────────────────────────────────────────────
   var saveTimer = null;
+  // The file-mode write in flight, if any; it resolves true once it landed.
+  var saving = null;
 
   function saveNow() {
     if (FILE) {
-      if (!FILE.writable) return;
-      fetch('/__file', {
+      if (!FILE.writable) return Promise.resolve(true);
+      if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+      var write = fetch('/__file' + FILE_Q, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain; charset=utf-8' },
         body: curValue()
@@ -2054,12 +2341,16 @@ ${HIGHLIGHT_RUNTIME}
           if (!r.ok) throw new Error('HTTP ' + r.status);
           elSave.className = '';
           elSave.textContent = '';
+          return true;
         })
         .catch(function () {
           elSave.className = 'err';
           elSave.textContent = 'not saved: write to ' + FILE.name + ' failed';
+          return false;
         });
-      return;
+      saving = write;
+      write.then(function () { if (saving === write) saving = null; });
+      return write;
     }
     var ok = state.deckId && lsSet(K.deck + state.deckId, curValue()) && touchCurrent();
     if (ok) {
@@ -2077,6 +2368,28 @@ ${HIGHLIGHT_RUNTIME}
     // Writing a megabyte of content costs real time. Back off on big docs.
     saveTimer = setTimeout(saveNow, curValue().length > 1024 * 1024 ? 1500 : 500);
   }
+
+  /**
+   * Writes a pending edit now and settles once it is on disk, for anything
+   * that reads the disk next: Claude, or the deck opened after a switch.
+   * Resolves false when the write failed.
+   */
+  function flushSave() {
+    if (slidePanel) slidePanel.flush();
+    if (saveTimer) return saveNow();
+    return saving || Promise.resolve(true);
+  }
+
+  // An edit still waiting on its write would go with the page, so leaving
+  // mid-save asks first, and the write is already on its way.
+  window.addEventListener('beforeunload', function (e) {
+    if (!FILE || !FILE.writable) return;
+    if (slidePanel) slidePanel.flush();
+    if (!(saveTimer || saving)) return;
+    if (saveTimer) saveNow();
+    e.preventDefault();
+    e.returnValue = '';
+  });
 
   // ── Text insertion, undo-safe ──────────────────────────────────────────
   function typeText(text) {
@@ -2610,12 +2923,14 @@ ${HIGHLIGHT_RUNTIME}
     });
   }
 
-  function buildHtmlDoc(forPrint) {
+  /** from: { html, start } presents a tagged copy opened at one slide. */
+  function buildHtmlDoc(forPrint, from) {
     return fetch('/__present-doc', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        html: srcHtml.value,
+        html: from ? from.html : srcHtml.value,
+        start: from ? from.start : undefined,
         theme: state.theme,
         title: $('docname').value,
         print: !!forPrint
@@ -2626,12 +2941,26 @@ ${HIGHLIGHT_RUNTIME}
     });
   }
 
-  function present() {
+  /**
+   * Presents an HTML deck from slide k. Hidden slides are not in the
+   * presented deck at all, so a hidden k starts at the next one shown.
+   */
+  function presentFrom(k) {
+    if (state.kind !== 'html' || !window.DRSlides) { present(); return; }
+    var d = window.DRSlides.decoratePresent(window.DRSlides.model(srcHtml.value));
+    if (!d.visible.length) { toast('Every slide is hidden, so there is nothing to present.', 'warn'); return; }
+    var at = 0;
+    while (at < d.visible.length - 1 && d.visible[at] < k) at++;
+    present({ html: d.html, start: at });
+  }
+
+  function present(from) {
     if (isEmpty()) { toast('Nothing to present yet.', 'warn'); return; }
+    // Bound straight to a click as well, where the argument is the event.
+    from = from && typeof from.start === 'number' ? from : null;
     expectingDeck = true;
-    var builder = state.kind === 'html' ? buildHtmlDoc : buildDeck;
     var tab = window.open('about:blank', '_blank');
-    builder(false)
+    (state.kind === 'html' ? buildHtmlDoc(false, from) : buildDeck(false))
       .then(function (data) {
         var url = location.origin + data.path +
           (data.path.indexOf('?') >= 0 ? '&' : '?') + 'ps=' + followSid +
@@ -3002,7 +3331,9 @@ ${HIGHLIGHT_RUNTIME}
 
   /** The status-bar counters' HTML-doc analog: chars and caret position. */
   function renderHtmlCounts() {
-    elChipSlides.textContent = srcHtml.value.length + ' chars';
+    var slideCount = slidePanel ? slidePanel.count() : 0;
+    elChipSlides.textContent = (slideCount ? slideCount + (slideCount === 1 ? ' slide · ' : ' slides · ') : '') +
+      srcHtml.value.length + ' chars';
     var before = srcHtml.value.slice(0, srcHtml.selectionStart || 0);
     var lines = before.split('\\n');
     elPos.textContent = 'Ln ' + lines.length + ', Col ' + (lines[lines.length - 1].length + 1);
@@ -3036,7 +3367,8 @@ ${HIGHLIGHT_RUNTIME}
 
     if (state.kind === 'html') {
       srcHtml.value = readDeck(id);
-      frameHtml.srcdoc = srcHtml.value;
+      if (slidePanel) slidePanel.reset();
+      reloadPreview();
       renderHtmlCounts();
       if (announce) toast('Opened ' + meta.name);
       srcHtml.focus();
@@ -3363,12 +3695,12 @@ ${HIGHLIGHT_RUNTIME}
     else if (name === 'download') download();
     else if (name === 'pdf') exportPdf();
     else if (name === 'html') exportHtml();
-    else if (name === 'open') $('file-any').click();
+    else if (name === 'open') $(FOLDER ? 'file-upload' : 'file-any').click();
     else if (name === 'grid') setMode(state.mode === 'grid' ? 'single' : 'grid');
     else if (name === 'theme') openThemes();
     else if (name === 'guide') { guide.classList.add('is-on'); }
     else if (name === 'palette') openPalette();
-    else if (name === 'decks') openLibrary();
+    else if (name === 'decks') { if (FOLDER) openFilesMenu(); else openLibrary(); }
     else if (name === 'new') newDeck();
     else if (name === 'duplicate') duplicateDeck();
     else if (name === 'delete') deleteDeck(state.deckId);
@@ -3407,19 +3739,101 @@ ${HIGHLIGHT_RUNTIME}
   // ── HTML doc source ──────────────────────────────────────────────────
   var htmlPreviewTimer = null;
 
+  // The preview is an about:srcdoc frame, where history.pushState and
+  // replaceState throw for any URL, even a bare hash. A slide deck that
+  // records its position that way would stop dead on its first slide, so
+  // the preview copy (never the file) gets both calls made harmless.
+  var HISTORY_SHIM = '<scr' + 'ipt>(function(){var h=history;["pushState","replaceState"].forEach(function(m){' +
+    'var f=h[m];h[m]=function(){try{return f.apply(h,arguments)}catch(e){}}})})();</scr' + 'ipt>';
+
+  function previewSrcdoc(html) {
+    var head = /<head(\\s[^>]*)?>/i.exec(html) || /<html(\\s[^>]*)?>/i.exec(html);
+    if (head) return html.slice(0, head.index + head[0].length) + HISTORY_SHIM + html.slice(head.index + head[0].length);
+    // No <head> or <html>: after a doctype, if any, so the doc keeps standards mode.
+    var doctype = /^\\s*<!doctype[^>]*>/i.exec(html);
+    var at = doctype ? doctype[0].length : 0;
+    return html.slice(0, at) + HISTORY_SHIM + html.slice(at);
+  }
+
   function onHtmlInput() {
     scheduleSave();
     renderHtmlCounts();
-    if (htmlPreviewTimer) clearTimeout(htmlPreviewTimer);
-    htmlPreviewTimer = setTimeout(function () { frameHtml.srcdoc = srcHtml.value; }, 140);
+    if (slidePanel) slidePanel.edited();
+    schedulePreview();
   }
+
+  function schedulePreview() {
+    if (htmlPreviewTimer) clearTimeout(htmlPreviewTimer);
+    htmlPreviewTimer = setTimeout(reloadPreview, 140);
+  }
+
+  /** The preview's copy carries the slide panel's tags; the source never does. */
+  function reloadPreview() {
+    if (htmlPreviewTimer) clearTimeout(htmlPreviewTimer);
+    htmlPreviewTimer = null;
+    var html = srcHtml.value;
+    frameHtml.srcdoc = previewSrcdoc(slidePanel ? slidePanel.previewHtml(html) : html);
+  }
+
+  // ── HTML slide panel ─────────────────────────────────────────────────
+  // For a doc that is a slide deck: thumbnails, sorter, notes, and every
+  // slide operation, each one a rewrite of the source above.
+  slidePanel = window.deckrunSlidePanel && window.DRSlides ? window.deckrunSlidePanel(window.DRSlides, {
+    src: srcHtml,
+    frame: frameHtml,
+    cmd: CMD,
+    srcdoc: previewSrcdoc,
+    isHtml: function () { return state.kind === 'html'; },
+    onSource: function (opts) {
+      if (!opts.nosave) scheduleSave();
+      renderHtmlCounts();
+      if (!opts.quiet) schedulePreview();
+    },
+    reload: reloadPreview,
+    ready: function (win) { if (inspect) inspect.ready(win); hookSlash(win); },
+    layout: layout,
+    present: presentFrom,
+    chat: FILE && FILE.chat ? chatAsk : null,
+    toast: toast,
+    get: lsGet,
+    set: lsSet
+  }) : null;
+
+  // ── Inspect ──────────────────────────────────────────────────────────
+  // The source and the preview point at each other, as in Chrome's
+  // DevTools: hover the source to find its element on the slide, or turn on
+  // inspect mode and hover the slide to find its source.
+  inspect = window.deckrunInspect ? window.deckrunInspect({
+    kind: function () { return state.kind; },
+    src: function () { return state.kind === 'html' ? srcHtml : src; },
+    frame: function () { return state.kind === 'html' ? frameHtml : frame; },
+    sources: [src, srcHtml],
+    frames: [frame, frameHtml],
+    htmlMap: function () { return slidePanel ? slidePanel.inspectMap() : null; },
+    mdMap: function () { return state.frameReady && mdMap && mdMap.src === src.value ? mdMap : null; },
+    shown: function () { return state.kind === 'html' ? (slidePanel ? slidePanel.current() : -1) : state.index; },
+    wrap: { hl: hl, measure: measure },
+    caret: function (pos) {
+      var ta = state.kind === 'html' ? srcHtml : src;
+      ta.focus();
+      ta.setSelectionRange(pos, pos);
+      // A pick is the person pointing at an element: the chat's "this".
+      chatMark('src');
+      if (state.kind === 'html') onHtmlCaret();
+      else { scrollCaretIntoView(); updateCaretUi(); }
+    }
+  }) : null;
 
   srcHtml.addEventListener('input', onHtmlInput);
   frameHtml.addEventListener('load', syncHtmlFrameTheme);
-  srcHtml.addEventListener('click', renderHtmlCounts);
+  function onHtmlCaret() {
+    renderHtmlCounts();
+    if (slidePanel) slidePanel.caretMoved();
+  }
+  srcHtml.addEventListener('click', onHtmlCaret);
   srcHtml.addEventListener('keyup', function (e) {
     if (e.key.indexOf('Arrow') === 0 || e.key === 'Home' || e.key === 'End' ||
-        e.key === 'PageUp' || e.key === 'PageDown') renderHtmlCounts();
+        e.key === 'PageUp' || e.key === 'PageDown') onHtmlCaret();
   });
   srcHtml.addEventListener('keydown', function (e) {
     if (e.key !== 'Tab') return;
@@ -3434,7 +3848,8 @@ ${HIGHLIGHT_RUNTIME}
     onHtmlInput();
   });
 
-  // Drag and drop a .md file onto the editor to open it.
+  // Drag and drop a .md file onto the editor to open it. In file mode the
+  // drop is copied into the folder instead (see uploadFiles).
   ['dragenter', 'dragover'].forEach(function (type) {
     paneEdit.addEventListener(type, function (e) {
       if (!e.dataTransfer) return;
@@ -3454,6 +3869,7 @@ ${HIGHLIGHT_RUNTIME}
     paneEdit.classList.remove('is-dropping');
     var files = e.dataTransfer ? e.dataTransfer.files : null;
     if (!files || !files.length) return;
+    if (FOLDER) { uploadFiles(files); return; }
     for (var i = 0; i < files.length; i++) {
       var f = files[i];
       if (/\\.(md|markdown|txt)$/i.test(f.name)) loadMarkdownFile(f);
@@ -3505,6 +3921,12 @@ ${HIGHLIGHT_RUNTIME}
   }
 
   $('file-any').addEventListener('change', function (e) {
+    if (FOLDER) {
+      hideStartScreenSilently();
+      uploadFiles(e.target.files);
+      e.target.value = '';
+      return;
+    }
     var f = e.target.files[0];
     if (f) {
       var fromStart = $('screen-start').classList.contains('is-on');
@@ -3572,6 +3994,12 @@ ${HIGHLIGHT_RUNTIME}
       onPick(btn);
     });
 
+    menuKeys(pop);
+    return wrap;
+  }
+
+  /** Arrow keys walk a menu's buttons; Escape closes it. */
+  function menuKeys(pop) {
     pop.addEventListener('keydown', function (e) {
       var items = Array.prototype.slice.call(pop.querySelectorAll('button'));
       var at = items.indexOf(document.activeElement);
@@ -3585,8 +4013,6 @@ ${HIGHLIGHT_RUNTIME}
         src.focus();
       }
     });
-
-    return wrap;
   }
 
   bindMenu('btn-export', 'export-menu', function (btn) {
@@ -3702,7 +4128,7 @@ ${HIGHLIGHT_RUNTIME}
       var md = state.kind === 'markdown';
 
       if (key === 'k' && !e.shiftKey && md) { e.preventDefault(); openPalette(); }
-      else if (key === 'o') { e.preventDefault(); openLibrary(); }
+      else if (key === 'o') { e.preventDefault(); if (FOLDER) openFilesMenu(); else openLibrary(); }
       else if (key === '/' && md) { e.preventDefault(); runAction('guide'); }
       else if (key === 'p' || (key === 's' && e.shiftKey)) { e.preventDefault(); exportPdf(); }
       else if (key === 's') { e.preventDefault(); saveNow(); download(); }
@@ -3713,11 +4139,31 @@ ${HIGHLIGHT_RUNTIME}
       else if (key === 'e' && md) { e.preventDefault(); insertSnippet(bySnippetId['inline-code']); }
       else if (key === 'g' && md) { e.preventDefault(); runAction('grid'); }
       else if (key === 'l' && e.shiftKey) { e.preventDefault(); runAction('theme'); }
+      else if (key === 'j' && CHAT) { e.preventDefault(); setChatOpen(!chatOpen()); }
       return;
     }
 
     if (palette.classList.contains('is-on') || guide.classList.contains('is-on') ||
         $('library').classList.contains('is-on') || menuIsOpen()) {
+      return;
+    }
+
+    // "/" anywhere but a text field opens the chat at its commands, as in Claude Code.
+    if (CHAT && e.key === '/' && !e.altKey && !isEditingText()) {
+      e.preventDefault();
+      openChatCommands();
+      return;
+    }
+
+    // An HTML deck steps through its slides the same way, through its slide panel.
+    if (state.kind === 'html') {
+      if (!slidePanel || !slidePanel.count() || (!e.altKey && isEditingText())) return;
+      var fwd = e.key === 'ArrowDown' || e.key === 'ArrowRight' || e.key === 'PageDown' || (!e.altKey && e.key === ' ');
+      var back = e.key === 'ArrowUp' || e.key === 'ArrowLeft' || e.key === 'PageUp';
+      if (fwd || back) {
+        e.preventDefault();
+        slidePanel.step(fwd ? 1 : -1);
+      }
       return;
     }
 
@@ -3854,9 +4300,11 @@ ${HIGHLIGHT_RUNTIME}
   // ── File mode ──────────────────────────────────────────────────────────
   /** Replaces the open document with what the server just read. */
   function setFileContent(content) {
+    chatMark('ext');
     if (state.kind === 'html') {
+      if (slidePanel) { slidePanel.external(content); return; }
       srcHtml.value = content;
-      frameHtml.srcdoc = content;
+      reloadPreview();
       renderHtmlCounts();
       return;
     }
@@ -3873,7 +4321,7 @@ ${HIGHLIGHT_RUNTIME}
   }
 
   function loadFromDisk(announce) {
-    fetch('/__file')
+    return fetch('/__file' + FILE_Q)
       .then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.text();
@@ -3888,6 +4336,948 @@ ${HIGHLIGHT_RUNTIME}
       });
   }
 
+  // ── Claude chat ────────────────────────────────────────────────────────
+  // Offered when the editor is backed by a file and Claude Code is on this
+  // machine. Each message runs one confined claude -p turn on the server
+  // that may edit only this file; its edits land on disk and come back
+  // through the file watcher like any other external change.
+  var CHAT = !!(FILE && FILE.chat);
+  var chatPane = $('pane-chat'), chatLog = $('chat-log'), chatInput = $('chat-input'), chatSend = $('chat-send');
+  var chatBusy = false;
+
+  var CHAT_STARTERS = {
+    html: [
+      'Make the title on this slide shorter',
+      'Rewrite the speaker notes on this slide in natural spoken English',
+      '/deck Check every slide for typos and fix them',
+      '/look Does anything on this slide overflow or overlap?'
+    ],
+    markdown: [
+      'Tighten the bullets on this slide',
+      'Add speaker notes to this slide',
+      '/deck Check every slide for typos and fix them'
+    ]
+  };
+
+  // What Claude takes "this" to mean leans on what the person last did in
+  // the source: a caret or selection they put there counts until a reload
+  // from disk (Claude's edit, an undo) moves the text under it.
+  var chatMarks = { clock: 0, src: 0, ext: 0 };
+  function chatMark(kind) {
+    if (!chatMarks) return;
+    chatMarks[kind] = ++chatMarks.clock;
+  }
+
+  // Turns that changed the file, for undo and redo, and the message whose
+  // changes were undone since Claude last heard from the person.
+  var chatTurns = [];
+  var chatReverted = null;
+  // Picked with /model; "" leaves it to Claude Code.
+  var chatModel = '';
+  var chatMenu = $('chat-menu'), menuItems = [], menuAt = 0;
+
+  function chatOpen() { return chatPane.classList.contains('is-on'); }
+
+  function setChatOpen(on, quiet) {
+    if (!CHAT) return;
+    chatPane.classList.toggle('is-on', on);
+    $('btn-chat').classList.toggle('is-on', on);
+    lsSet(K.chat, on ? '1' : '0');
+    layout();
+    if (quiet) return;
+    if (on) chatInput.focus();
+    else (state.kind === 'html' ? srcHtml : src).focus();
+  }
+
+  function chatLine(cls, text) {
+    var el = document.createElement('div');
+    el.className = cls;
+    el.textContent = text;
+    chatLog.appendChild(el);
+    chatLog.scrollTop = chatLog.scrollHeight;
+    return el;
+  }
+
+  /** A note from deckrun itself, not from Claude. */
+  function chatSys(text) {
+    if (chatLog.querySelector('.chat-empty')) chatLog.textContent = '';
+    return chatLine('chat-sys', text);
+  }
+
+  function chatEmptyState() {
+    chatLog.textContent = '';
+    var box = document.createElement('div');
+    box.className = 'chat-empty';
+    box.textContent = 'Claude edits ' + FILE.name + ' directly, and the preview reloads as it does. ' +
+      'A request is about the slide in the preview, or what you singled out on it: code you selected, text you selected on the slide, ' +
+      'or an element you picked with ' + CMD + ' Shift X. Type / for commands.';
+    (CHAT_STARTERS[state.kind] || CHAT_STARTERS.html).forEach(function (text) {
+      var b = document.createElement('button');
+      b.textContent = text;
+      b.addEventListener('click', function () { chatInput.value = text; chatInput.focus(); });
+      box.appendChild(b);
+    });
+    chatLog.appendChild(box);
+  }
+
+  // ── What "this" is ─────────────────────────────────────────────────────
+
+  function mdTitle(text) {
+    var m = /^[ \\t]*#{1,6}[ \\t]+(.+)$/m.exec(text);
+    return m ? m[1].trim() : '';
+  }
+
+  /** Each slide's place in text: the editor's own, or a snapshot from before a turn. */
+  function chatSpans(text) {
+    if (state.kind === 'html') return slidePanel ? slidePanel.spans(text) : [];
+    return slideMap(text).map(function (sp) {
+      // Without the blank lines around the separators, so the range starts at the slide's first line.
+      var a = sp[0], b = sp[1];
+      while (a < b && /\\s/.test(text.charAt(a))) a++;
+      while (b > a && /\\s/.test(text.charAt(b - 1))) b--;
+      return { start: a, end: b, title: mdTitle(text.slice(a, b)) };
+    });
+  }
+
+  function chatSlideCount() { return chatSpans(curValue()).length; }
+
+  function chatCurrent(count) {
+    if (!count) return -1;
+    if (state.kind === 'html') return slidePanel ? slidePanel.current() : -1;
+    return Math.max(0, Math.min(state.index, count - 1));
+  }
+
+  /** A document that is not a deck: the words in the middle of the preview. */
+  function shownText() {
+    try {
+      var doc = frameHtml.contentDocument;
+      var el = doc && doc.elementFromPoint(frameHtml.clientWidth / 2, frameHtml.clientHeight / 2);
+      var box = el && (el.closest('section, article, [class*="slide"]') || el);
+      if (!box || box === doc.body || box === doc.documentElement) return '';
+      return (box.innerText || '').replace(/\\s+/g, ' ').trim();
+    } catch (e) {}
+    return '';
+  }
+
+  /** The narrowest thing singled out on slide k: selected code, selected slide text, or the caret's element. */
+  function chatFocus(ta, slides, k) {
+    var slide = slides[k] || null;
+    var fresh = chatMarks.src > chatMarks.ext;
+    var a = ta.selectionStart, b = ta.selectionEnd;
+    if (fresh && b > a && ta.value.slice(a, b).trim()) return { how: 'code', start: a, end: b };
+
+    try {
+      var win = (state.kind === 'html' ? frameHtml : frame).contentWindow;
+      var sel = win && win.getSelection();
+      var said = sel && !sel.isCollapsed ? sel.toString().replace(/\\s+/g, ' ').trim() : '';
+      if (said) {
+        var n = inspect ? inspect.elementFor(sel.getRangeAt(0).commonAncestorContainer) : null;
+        // Text selected on a slide the deck has since moved away from says nothing about this one.
+        if (n && (!slide || n.slide === k)) return { how: 'text', text: said, start: n.s, end: n.e, label: n.label };
+        if (!n) return { how: 'text', text: said, start: -1, end: -1 };
+      }
+    } catch (e) {}
+
+    if (fresh && inspect && slide) {
+      var el = inspect.elementAt(a);
+      var inner = slide.inner || [slide.start, slide.end];
+      if (el && el.parent !== null && el.s >= inner[0] && el.e <= inner[1]) {
+        return { how: 'element', start: el.s, end: el.e, label: el.label };
+      }
+    }
+    return null;
+  }
+
+  /** What goes to Claude with a message, and the tag shown under it. */
+  function chatTarget(scope, k, look) {
+    var html = state.kind === 'html';
+    var ta = html ? srcHtml : src;
+    var slides = chatSpans(ta.value);
+    if (k === undefined) k = chatCurrent(slides.length);
+    return DRChat.target({
+      file: FILE.name,
+      text: ta.value,
+      scope: scope,
+      slides: slides,
+      current: k,
+      focus: scope === 'deck' ? null : chatFocus(ta, slides, k),
+      shown: html && !slides.length ? shownText() : '',
+      reverted: chatReverted,
+      look: !!look
+    });
+  }
+
+  function goSlide(k) {
+    if (state.kind === 'html') { if (slidePanel) slidePanel.go(k); }
+    else setIndex(k, true);
+    if (chatOpen()) chatInput.focus();
+  }
+
+  // ── Slash commands ─────────────────────────────────────────────────────
+  // As in Claude Code: "/" lists the commands, the list narrows as you type,
+  // and a command that takes a choice (a model, a slide) lists those next.
+
+  function menuOpen() { return menuItems.length > 0 && chatMenu.classList.contains('is-on'); }
+
+  function hideMenu() {
+    chatMenu.classList.remove('is-on');
+    chatMenu.textContent = '';
+    menuItems = [];
+  }
+
+  function paintMenu() {
+    var value = chatInput.value;
+    menuItems = DRChat.complete(value, { slides: chatSpans(curValue()), model: chatModel });
+    chatMenu.textContent = '';
+    if (!menuItems.length) {
+      // Typing a command's words: a reminder of what it takes.
+      var h = DRChat.hint(value);
+      if (!h) { hideMenu(); return; }
+      var row = document.createElement('div');
+      row.className = 'chat-cmd-hint';
+      var usage = document.createElement('b');
+      usage.textContent = '/' + h.name + ' ' + h.args;
+      row.appendChild(usage);
+      row.appendChild(document.createTextNode('  ' + h.help));
+      chatMenu.appendChild(row);
+      chatMenu.classList.add('is-on');
+      return;
+    }
+    if (menuAt >= menuItems.length) menuAt = 0;
+    menuItems.forEach(function (it, i) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'chat-cmd' + (i === menuAt ? ' is-active' : '');
+      b.setAttribute('role', 'option');
+      b.setAttribute('aria-selected', i === menuAt ? 'true' : 'false');
+      var name = document.createElement('span');
+      name.className = 'chat-cmd__name';
+      name.textContent = it.label;
+      if (it.hint) {
+        var args = document.createElement('span');
+        args.className = 'chat-cmd__args';
+        args.textContent = ' ' + it.hint;
+        name.appendChild(args);
+      }
+      var help = document.createElement('span');
+      help.className = 'chat-cmd__help';
+      help.textContent = it.help;
+      b.appendChild(name);
+      b.appendChild(help);
+      // Keep the caret in the input.
+      b.addEventListener('mousedown', function (e) { e.preventDefault(); });
+      b.addEventListener('click', function () { pickItem(it); });
+      chatMenu.appendChild(b);
+    });
+    chatMenu.classList.add('is-on');
+    var active = chatMenu.querySelector('.chat-cmd.is-active');
+    if (active && active.scrollIntoView) active.scrollIntoView({ block: 'nearest' });
+  }
+
+  /** Enter or a click runs what is complete and waits for the words the rest need; Tab only completes. */
+  function pickItem(it, tab) {
+    hideMenu();
+    chatInput.value = tab ? it.fill : it.value;
+    chatInput.focus();
+    if (!tab && it.run) { sendChat(); return; }
+    menuAt = 0;
+    paintMenu();
+  }
+
+  /** "/" outside a text field: the chat, open at its commands. */
+  function openChatCommands() {
+    if (!CHAT) return;
+    setChatOpen(true, true);
+    chatInput.focus();
+    if (chatInput.value.trim()) return;
+    chatInput.value = '/';
+    menuAt = 0;
+    paintMenu();
+  }
+
+  /** The preview is the deck's own page, with its own keys; "/" there opens the commands too. */
+  function hookSlash(win) {
+    try {
+      if (!win || win.__drSlash) return;
+      win.__drSlash = true;
+      win.addEventListener('keydown', function (e) {
+        if (!CHAT || e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
+        var t = e.target;
+        if (t && (t.isContentEditable || /^(input|textarea|select)$/i.test(t.tagName || ''))) return;
+        e.preventDefault();
+        e.stopPropagation();
+        openChatCommands();
+      }, true);
+    } catch (err) {}
+  }
+
+  function busyNote() {
+    chatSys('Claude is still working on the last message. Wait for it, or type /stop.');
+  }
+
+  function chatHelp() {
+    var lines = DRChat.COMMANDS.map(function (c) {
+      return '/' + c.name + (c.args ? ' ' + c.args : '') + '  —  ' + c.help;
+    });
+    lines.push('', 'Models for /model: ' + DRChat.MODELS.map(function (x) { return x.name; }).join(', ') +
+      '. Now: ' + (chatModel || 'default') + '.');
+    lines.push('', 'Without a command, a request is about the slide in the preview. To narrow it, select code, ' +
+      'select text on the slide, or pick an element with ' + CMD + ' Shift X before you ask. ' +
+      'Press / anywhere outside a text box to open this list.');
+    chatSys(lines.join('\\n'));
+  }
+
+  function showContext() {
+    var t = chatTarget('slide');
+    var parts = t.context.split('\\n\\n');
+    var text = 'This message would be about: ' + (t.tag || 'the whole file') + '\\n\\n' + parts[0];
+    if (parts.length > 1) text += '\\n\\n(Claude also gets the source shown above, ' + (parts.slice(1).join('\\n\\n').split('\\n').length - 1) + ' lines.)';
+    text += '\\n\\nModel: ' + (chatModel || 'default') + '.';
+    chatSys(text);
+  }
+
+  // ── /model ─────────────────────────────────────────────────────────────
+
+  function paintModel() {
+    var b = $('chat-model');
+    b.textContent = chatModel || 'default';
+    b.classList.toggle('is-set', !!chatModel);
+  }
+
+  function setChatModel(name) {
+    chatModel = name === 'default' ? '' : name;
+    lsSet(K.chatModel, chatModel);
+    paintModel();
+  }
+
+  function modelCommand(arg, typed) {
+    var m = /^(\\S+)(?:\\s+([\\s\\S]*))?$/.exec(arg);
+    if (!m) {
+      chatSys('Model: ' + (chatModel || "default (Claude Code's own setting)") + '. Pick one from the list, or type /model <name>.');
+      chatInput.value = '/model ';
+      menuAt = 0;
+      paintMenu();
+      return;
+    }
+    var said = DRChat.latin(m[1]).toLowerCase();
+    var known = DRChat.MODELS.filter(function (x) { return x.name === said; })[0];
+    var name = known ? known.name : m[1];
+    if (!/^[A-Za-z0-9][A-Za-z0-9._[\\]-]{0,63}$/.test(name)) {
+      chatSys("'" + m[1] + "' is not a model name. Try " + DRChat.MODELS.map(function (x) { return x.name; }).join(', ') + '.');
+      return;
+    }
+    // With a request after the name, that model answers this one message.
+    if (m[2] && m[2].trim()) {
+      if (chatBusy) { busyNote(); return; }
+      chatInput.value = '';
+      askClaude(m[2].trim(), 'slide', typed, undefined, { model: name });
+      return;
+    }
+    chatInput.value = '';
+    setChatModel(name);
+    chatSys(name === 'default'
+      ? "Back to Claude Code's own model setting."
+      : 'Using ' + name + ' from the next message on.' + (known ? '' : ' Claude Code will say so if it does not know that name.'));
+  }
+
+  // ── /look ──────────────────────────────────────────────────────────────
+
+  function lastUserText() {
+    var all = chatLog.querySelectorAll('.chat-msg--user');
+    return all.length ? all[all.length - 1].textContent : '';
+  }
+
+  /** What /look asks on its own, in the language the person writes in. */
+  function lookRequest() {
+    var ko = /[ㄱ-ㆎ가-힣]/.test(lastUserText()) || /^ko/i.test(navigator.language || '');
+    return ko
+      ? '이 슬라이드가 실제로 보이는 모습을 보고, 레이아웃이나 글자에 문제가 있으면 알려줘. 아직 파일은 고치지 마.'
+      : 'Look at how this slide renders and tell me what looks wrong in its layout or text, if anything. Do not change the file yet.';
+  }
+
+  /**
+   * Renders the slide in the preview the way a thumbnail shows it, the
+   * deck reduced to that one slide, in a headless browser at 1280x720, then
+   * sends the picture with the request.
+   */
+  function lookAndAsk(request, typed) {
+    if (state.kind !== 'html' || !slidePanel || !slidePanel.count() || !window.DRSlides) {
+      chatSys('/look works on HTML slide decks.');
+      return;
+    }
+    slidePanel.flush();
+    var k = slidePanel.current();
+    var html = window.DRSlides.isolate(window.DRSlides.model(srcHtml.value), k);
+    if (chatLog.querySelector('.chat-empty')) chatLog.textContent = '';
+    var note = chatLine('chat-meta', 'taking a picture of slide ' + (k + 1) + '…');
+    setChatBusy(true);
+    fetch('/__look' + FILE_Q, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ html: html })
+    })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (j) {
+          if (!r.ok) throw new Error(j.detail || j.error || 'HTTP ' + r.status);
+          return j;
+        });
+      })
+      .then(function (j) {
+        note.remove();
+        setChatBusy(false);
+        askClaude(request || lookRequest(), 'slide', typed, k, { look: j.id });
+      })
+      .catch(function (err) {
+        note.remove();
+        setChatBusy(false);
+        chatLine('chat-msg chat-msg--err', 'Could not take a picture of the slide: ' + err.message);
+      });
+  }
+
+  function runCommand(cmd, typed) {
+    if (cmd.matches.length !== 1) {
+      chatSys(cmd.matches.length
+        ? '/' + cmd.name + ' could be ' + cmd.matches.map(function (n) { return '/' + n; }).join(' or ') + '.'
+        : 'There is no /' + cmd.name + '. Type /help for the list.');
+      return;
+    }
+    var arg = cmd.arg;
+    if (cmd.name === 'stop') {
+      chatInput.value = '';
+      if (chatBusy) stopChat(); else chatSys('Claude is not working on anything.');
+      return;
+    }
+    if (cmd.name === 'help') { chatInput.value = ''; chatHelp(); return; }
+    if (cmd.name === 'context') { chatInput.value = ''; showContext(); return; }
+    if (cmd.name === 'model') { modelCommand(arg, typed); return; }
+    if (chatBusy) { busyNote(); return; }
+    if (cmd.name === 'clear') { chatInput.value = ''; newChat(); return; }
+    if (cmd.name === 'undo') {
+      chatInput.value = '';
+      var last = null;
+      chatTurns.forEach(function (t) { if (!t.undone) last = t; });
+      if (last) undoTurn(last); else chatSys('Nothing Claude changed in this chat is left to undo.');
+      return;
+    }
+    if (cmd.name === 'look') { chatInput.value = ''; lookAndAsk(arg, typed); return; }
+    if (cmd.name === 'deck') {
+      if (!arg) { chatSys('Say what to do with it: /deck check every slide for typos'); return; }
+      chatInput.value = '';
+      askClaude(arg, 'deck', typed);
+      return;
+    }
+    if (cmd.name === 'slide') {
+      var total = chatSlideCount();
+      var m = /^(\\d+)(?:\\s+([\\s\\S]*))?$/.exec(arg);
+      var k = m ? +m[1] - 1 : -1;
+      if (k < 0 || k >= total) {
+        chatSys(total ? 'Which slide? /slide 1 to /slide ' + total + ', then what to do with it.' : FILE.name + ' has no slides.');
+        return;
+      }
+      chatInput.value = '';
+      goSlide(k);
+      if (m[2] && m[2].trim()) askClaude(m[2].trim(), 'slide', typed, k);
+      return;
+    }
+  }
+
+  // ── Claude's choices, as buttons ───────────────────────────────────────
+
+  /** Choices answer the question they came with; a new message retires them. */
+  function retireChoices() {
+    Array.prototype.forEach.call(chatLog.querySelectorAll('.chat-choices button'), function (b) { b.disabled = true; });
+  }
+
+  function showChoices(after, list) {
+    var box = document.createElement('div');
+    box.className = 'chat-choices';
+    list.forEach(function (text) {
+      var b = document.createElement('button');
+      b.textContent = text;
+      b.addEventListener('click', function () {
+        if (chatBusy) { busyNote(); return; }
+        b.classList.add('is-picked');
+        chatInput.value = text;
+        sendChat();
+      });
+      box.appendChild(b);
+    });
+    chatLog.insertBefore(box, after.nextSibling);
+    chatLog.scrollTop = chatLog.scrollHeight;
+  }
+
+  // ── What a turn changed, and undoing it ────────────────────────────────
+
+  function finishTurn(turn) {
+    turn.after = curValue();
+    if (turn.before === null || turn.after === turn.before) return;
+    var ch = DRChat.changes(turn.before, chatSpans(turn.before), turn.after, chatSpans(turn.after));
+    var row = document.createElement('div');
+    row.className = 'chat-turn';
+    function word(text) { row.appendChild(document.createTextNode(text)); }
+    function slides(label, ks) {
+      if (!ks.length) return;
+      word(label);
+      ks.forEach(function (k) {
+        var b = document.createElement('button');
+        b.className = 'chat-slide';
+        b.textContent = String(k + 1);
+        b.title = 'Show slide ' + (k + 1);
+        b.addEventListener('click', function () { if (!turn.undone) goSlide(k); });
+        row.appendChild(b);
+      });
+    }
+    slides('changed slide', ch.changed);
+    slides(ch.changed.length ? ' \\u00b7 new' : 'new slide', ch.added);
+    if (ch.removed) word((ch.changed.length || ch.added.length ? ' \\u00b7 ' : '') + ch.removed + ' removed');
+    if (ch.outside) word((ch.changed.length || ch.added.length || ch.removed ? ' \\u00b7 ' : 'changed ') + 'styles, scripts or head');
+    if (!row.childNodes.length) word('changed ' + FILE.name);
+    var btn = document.createElement('button');
+    btn.className = 'chat-undo';
+    btn.textContent = 'undo';
+    btn.title = 'Put ' + FILE.name + ' back the way it was before this message';
+    btn.addEventListener('click', function () { if (turn.undone) redoTurn(turn); else undoTurn(turn); });
+    row.appendChild(btn);
+    chatLog.appendChild(row);
+    chatLog.scrollTop = chatLog.scrollHeight;
+    turn.el = row;
+    turn.btn = btn;
+    turn.undone = false;
+    chatTurns.push(turn);
+    if (slidePanel && state.kind === 'html') slidePanel.flash(ch.changed.concat(ch.added));
+  }
+
+  function setUndone(turn, on) {
+    turn.undone = on;
+    turn.el.classList.toggle('is-undone', on);
+    turn.btn.textContent = on ? 'redo' : 'undo';
+    turn.btn.title = on
+      ? 'Put back what Claude changed for this message'
+      : 'Put ' + FILE.name + ' back the way it was before this message';
+  }
+
+  /** Writes content as if it came from disk, so the slide panel's undo history keeps the step, then saves it. */
+  function restoreFile(content) {
+    if (slidePanel && state.kind === 'html') slidePanel.flush();
+    setFileContent(content);
+    scheduleSave();
+    flushSave();
+  }
+
+  function undoTurn(turn) {
+    if (chatBusy) { busyNote(); return; }
+    var at = chatTurns.indexOf(turn);
+    if (curValue() !== turn.after &&
+        !confirm('Undo what Claude changed for "' + turn.message.slice(0, 60) + '"?\\n\\nEverything changed in ' + FILE.name + ' after it, by Claude or by you, is undone too.')) return;
+    restoreFile(turn.before);
+    chatTurns.forEach(function (t, i) { if (i >= at && !t.undone) setUndone(t, true); });
+    chatReverted = turn.message;
+    chatSys('Undid the changes for "' + turn.message.slice(0, 80) + '". Claude will be told before your next message.');
+  }
+
+  function redoTurn(turn) {
+    if (chatBusy) { busyNote(); return; }
+    if (curValue() !== turn.before &&
+        !confirm('Put back what Claude changed for "' + turn.message.slice(0, 60) + '"?\\n\\n' + FILE.name + ' has changed since, and those changes would be replaced.')) return;
+    restoreFile(turn.after);
+    setUndone(turn, false);
+    // Claude's memory of the turn is true again.
+    if (chatReverted === turn.message) chatReverted = null;
+  }
+
+  // ── Sending ────────────────────────────────────────────────────────────
+
+  function setChatBusy(on) {
+    chatBusy = on;
+    if (slidePanel) slidePanel.busy(on);
+    chatPane.classList.toggle('is-busy', on);
+    chatSend.textContent = on ? 'stop' : 'send';
+    // Claude is writing the file; typing now would race its edits.
+    src.readOnly = on;
+    srcHtml.readOnly = on;
+    elSave.className = on ? 'warn' : '';
+    elSave.textContent = on ? 'claude is editing ' + FILE.name : '';
+  }
+
+  function sendChat() {
+    var message = chatInput.value.trim();
+    if (!message) return;
+    hideMenu();
+    var cmd = DRChat.command(message);
+    if (cmd) { runCommand(cmd, message); return; }
+    if (chatBusy) return;
+    chatInput.value = '';
+    askClaude(message, 'slide', message);
+  }
+
+  /**
+   * One turn: the message, what it is about, the reply as it streams, and
+   * what changed. opts.look is a picture of the slide from /look; opts.model
+   * answers this message only.
+   */
+  function askClaude(message, scope, typed, k, opts) {
+    opts = opts || {};
+    if (chatLog.querySelector('.chat-empty')) chatLog.textContent = '';
+    retireChoices();
+    // Notes or slide text still being typed are written first, so the line
+    // numbers Claude gets match the file it reads.
+    if (slidePanel) slidePanel.flush();
+    var target = chatTarget(scope, k, opts.look);
+    var model = opts.model || chatModel;
+    chatLine('chat-msg chat-msg--user', typed || message);
+    var tag = target.tag + (opts.model ? (target.tag ? ' \\u00b7 ' : '') + opts.model : '');
+    if (tag) chatLine('chat-tag', '\\u2192 ' + tag);
+    if (opts.look) {
+      var pic = document.createElement('a');
+      pic.className = 'chat-look';
+      pic.href = '/__look?id=' + opts.look;
+      pic.target = '_blank';
+      pic.title = 'The picture Claude was sent';
+      var img = document.createElement('img');
+      img.alt = 'The slide as Claude sees it';
+      img.addEventListener('load', function () { chatLog.scrollTop = chatLog.scrollHeight; });
+      img.src = pic.href;
+      pic.appendChild(img);
+      chatLog.appendChild(pic);
+    }
+    var reverted = chatReverted;
+    chatReverted = null;
+    setChatBusy(true);
+
+    var turn = { message: typed || message, before: null, after: null };
+    var reply = null, lastReply = null, heard = false;
+    function onEvent(ev) {
+      heard = true;
+      if (ev.type === 'text') {
+        if (!reply) { reply = lastReply = chatLine('chat-msg', ''); reply.raw = ''; }
+        reply.raw += ev.text;
+        reply.textContent = DRChat.visible(reply.raw);
+        chatLog.scrollTop = chatLog.scrollHeight;
+      } else if (ev.type === 'tool') {
+        // Text after a tool call is a new paragraph, not a continuation.
+        reply = null;
+        var edits = ev.name === 'Edit' || ev.name === 'Write';
+        chatLine('chat-tool' + (edits ? ' chat-tool--edit' : ''), (edits ? 'edited ' : ev.name.toLowerCase() + ' ') + (ev.target || ''));
+      } else if (ev.type === 'done') {
+        if (!lastReply && ev.text) { lastReply = chatLine('chat-msg', ''); lastReply.raw = ev.text; }
+        if (lastReply) {
+          var said = DRChat.choices(lastReply.raw);
+          lastReply.textContent = said.text;
+          if (said.choices.length) showChoices(lastReply, said.choices);
+        }
+        if (ev.denied && ev.denied.length) {
+          chatLine('chat-msg chat-msg--err', 'Blocked: ' + ev.denied.join(', ') + '. Chat can only edit ' + FILE.name + '.');
+        }
+        if (!ev.ok) chatLine('chat-msg chat-msg--err', 'Claude stopped with an error.');
+        chatLine('chat-meta', 'done in ' + Math.max(1, Math.round(ev.ms / 1000)) + 's');
+      } else if (ev.type === 'error') {
+        chatLine('chat-msg chat-msg--err', ev.message);
+      }
+    }
+
+    flushSave()
+      .then(function () {
+        turn.before = curValue();
+        return fetch('/__chat' + FILE_Q, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: message, context: target.context, model: model || undefined, look: opts.look })
+        });
+      })
+      .then(function (r) {
+        if (!r.ok) {
+          return r.json().catch(function () { return {}; }).then(function (j) {
+            throw new Error(j.detail || j.error || 'HTTP ' + r.status);
+          });
+        }
+        var reader = r.body.getReader();
+        var decoder = new TextDecoder();
+        var buf = '';
+        function pump() {
+          return reader.read().then(function (chunk) {
+            if (chunk.done) return;
+            buf += decoder.decode(chunk.value, { stream: true });
+            var nl;
+            while ((nl = buf.indexOf('\\n')) >= 0) {
+              var line = buf.slice(0, nl);
+              buf = buf.slice(nl + 1);
+              if (line.trim()) onEvent(JSON.parse(line));
+            }
+            return pump();
+          });
+        }
+        return pump();
+      })
+      .catch(function (err) {
+        // Claude never heard about the undo; tell it next time.
+        if (!heard && reverted) chatReverted = reverted;
+        chatLine('chat-msg chat-msg--err', 'Chat failed: ' + err.message);
+      })
+      .then(function () {
+        setChatBusy(false);
+        // The watcher has usually delivered the edits already; this covers
+        // --no-watch and the last write of the turn.
+        return loadFromDisk(false);
+      })
+      .then(function () {
+        finishTurn(turn);
+        if (chatOpen()) chatInput.focus();
+      });
+  }
+
+  /** Sends a message on the person's behalf, as if typed into the chat. */
+  function chatAsk(message) {
+    if (!CHAT || chatBusy) {
+      toast(chatBusy ? 'Claude is still working on the last message.' : 'Chat is off for this file.', 'warn');
+      return;
+    }
+    setChatOpen(true, true);
+    chatInput.value = message;
+    sendChat();
+  }
+
+  function stopChat() {
+    fetch('/__chat/stop', { method: 'POST' }).catch(function () {});
+  }
+
+  function newChat() {
+    if (chatBusy) return;
+    fetch('/__chat/reset' + FILE_Q, { method: 'POST' }).catch(function () {});
+    // A new conversation starts from the file as it is; old undo buttons go with the old log.
+    chatTurns = [];
+    chatReverted = null;
+    chatEmptyState();
+    chatInput.focus();
+  }
+
+  if (CHAT) {
+    document.documentElement.dataset.chat = 'on';
+    $('chat-file').textContent = FILE.name;
+    $('local-note').textContent = 'local only, except what you send to Claude';
+    $('btn-chat').addEventListener('click', function () { setChatOpen(!chatOpen()); });
+    $('chat-close').addEventListener('click', function () { setChatOpen(false); });
+    $('chat-new').addEventListener('click', newChat);
+    chatSend.addEventListener('click', function () { if (chatBusy) stopChat(); else sendChat(); });
+    chatInput.addEventListener('keydown', function (e) {
+      // Enter mid-composition picks an IME candidate (Korean, Japanese, …).
+      if (e.isComposing || e.keyCode === 229) return;
+      if (menuOpen()) {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          menuAt = (menuAt + (e.key === 'ArrowDown' ? 1 : -1) + menuItems.length) % menuItems.length;
+          paintMenu();
+          return;
+        }
+        if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) { e.preventDefault(); pickItem(menuItems[menuAt], e.key === 'Tab'); return; }
+      }
+      // Esc closes the list or the reminder first, then the chat.
+      if (e.key === 'Escape' && chatMenu.classList.contains('is-on')) { e.preventDefault(); hideMenu(); return; }
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
+      else if (e.key === 'Escape') { e.preventDefault(); setChatOpen(false); }
+    });
+    chatInput.addEventListener('input', function (e) {
+      // A full-width slash, from an input method in full-width mode, is the same key.
+      if (!e.isComposing && chatInput.value.charAt(0) === '\\uff0f') {
+        chatInput.value = '/' + chatInput.value.slice(1);
+      }
+      menuAt = 0;
+      paintMenu();
+    });
+    chatInput.addEventListener('blur', hideMenu);
+    chatModel = lsGet(K.chatModel, '');
+    paintModel();
+    $('chat-model').addEventListener('click', function () {
+      setChatOpen(true, true);
+      chatInput.value = '/model ';
+      chatInput.focus();
+      menuAt = 0;
+      paintMenu();
+    });
+    // A caret or selection the person puts in the source is what "this" can narrow to.
+    [src, srcHtml].forEach(function (ta) {
+      ['mouseup', 'keyup', 'input'].forEach(function (t) { ta.addEventListener(t, function () { chatMark('src'); }); });
+    });
+  }
+
+  // ── Folder ─────────────────────────────────────────────────────────────
+  // In file mode the files menu lists the decks beside the opened file.
+  // Picking one opens it in this tab at /?file=<name>, so Back returns to the
+  // last one. Uploads, from the menu or dropped on the editor, are copied
+  // into that folder and opened from there: they save to disk, their images
+  // load, and the chat can edit them, like the file deckrun started with.
+  var filesWrap = $('files-wrap');
+  var DECK_FILE = /\\.(html?|md|markdown)$/i;
+  // A message for the page the next switch lands on.
+  var FLASH = 'deckrun.flash.v1';
+
+  function sizeLabel(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' KB';
+    return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+  }
+
+  function filesNote(text) {
+    var host = $('files-list');
+    host.textContent = '';
+    var note = document.createElement('div');
+    note.className = 'files-empty';
+    note.textContent = text;
+    host.appendChild(note);
+  }
+
+  function renderFiles(files) {
+    if (!files.length) { filesNote('No .html or .md decks here yet.'); return; }
+    var host = $('files-list');
+    host.textContent = '';
+    files.forEach(function (f) {
+      var open = f.name === FILE.name;
+      var b = document.createElement('button');
+      b.dataset.file = f.name;
+      b.title = open ? f.name + ' is open' : 'Open ' + f.name;
+      if (open) b.className = 'is-on';
+      var name = document.createElement('span');
+      name.className = 'menu__name';
+      name.textContent = f.name;
+      var hint = document.createElement('span');
+      hint.className = 'menu__hint';
+      hint.textContent = open ? 'open' : sizeLabel(f.size);
+      b.appendChild(name);
+      b.appendChild(hint);
+      host.appendChild(b);
+    });
+  }
+
+  /** Lists the folder fresh each time, so files added outside deckrun show up. */
+  function openFilesMenu() {
+    if (openMenu === filesWrap) { closeMenu(); return; }
+    fetch('/__files')
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        $('files-folder').textContent = data.folder;
+        $('files-folder').title = data.path;
+        renderFiles(data.files || []);
+      })
+      .catch(function () { filesNote('Could not list the folder. Is deckrun still running?'); })
+      .then(function () {
+        if (openMenu !== filesWrap) toggleMenu(filesWrap);
+        var on = $('files-list').querySelector('.is-on');
+        if (on) on.focus();
+      });
+  }
+
+  /** Opens another deck from the folder in this tab, once this one is saved. */
+  function switchFile(name, flash) {
+    if (chatBusy) {
+      if (!confirm('Claude is still working on ' + FILE.name + '. Stop it and open ' + name + '?')) return;
+      stopChat();
+    }
+    flushSave().then(function (ok) {
+      if (!ok) {
+        toast(FILE.name + ' could not be saved, so it stays open. Is deckrun still running?', 'err');
+        return;
+      }
+      if (flash) { try { sessionStorage.setItem(FLASH, JSON.stringify(flash)); } catch (err) {} }
+      location.href = '/?file=' + encodeURIComponent(name);
+    });
+  }
+
+  /** Sends one file. An asset whose name is taken by other content asks first. */
+  function uploadOne(file, replace) {
+    return fetch('/__upload?name=' + encodeURIComponent(file.name) + (replace ? '&replace=1' : ''), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: file
+    })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (body) {
+          if (!r.ok) throw new Error(body.detail || body.error || 'HTTP ' + r.status);
+          return body;
+        });
+      })
+      .then(function (body) {
+        if (body.status !== 'conflict') return body;
+        var replaceIt = confirm(
+          file.name + ' is already in ' + FILE.folder + ', with different content.\\n\\n' +
+          'OK replaces it. The old one is kept in .deckrun-backup.\\n' +
+          'Cancel keeps the one that is there.'
+        );
+        return replaceIt ? uploadOne(file, true) : { status: 'kept', name: file.name };
+      });
+  }
+
+  /**
+   * Copies files into the folder, one at a time and assets first, so a deck
+   * among them opens with its images already in place; then opens the first
+   * deck. A deck never overwrites one already there.
+   */
+  function uploadFiles(list) {
+    var files = Array.prototype.slice.call(list || []);
+    if (!files.length) return;
+    files.sort(function (a, b) { return DECK_FILE.test(a.name) - DECK_FILE.test(b.name); });
+    var notes = [], copied = 0, failed = 0, deck = null;
+    var chain = Promise.resolve();
+    files.forEach(function (file) {
+      chain = chain.then(function () {
+        return uploadOne(file, false).then(function (r) {
+          if (r.status === 'created' || r.status === 'renamed' || r.status === 'replaced') copied++;
+          if (r.status === 'renamed') notes.push(file.name + ' was already there with different content, so the copy is ' + r.name + '.');
+          if (r.status === 'replaced') notes.push('The old ' + r.name + ' is in ' + r.backup + '.');
+          if (!deck && DECK_FILE.test(r.name)) deck = r.name;
+        }, function (err) {
+          failed++;
+          notes.push('Skipped ' + file.name + ': ' + err.message + '.');
+        });
+      });
+    });
+    chain.then(function () {
+      var head = copied ? 'Copied ' + copied + ' file' + (copied === 1 ? '' : 's') + ' into ' + FILE.folder + '.' : '';
+      var text = [head].concat(notes).filter(Boolean).join(' ');
+      var kind = failed ? 'warn' : null;
+      if (deck && deck !== FILE.name) {
+        switchFile(deck, { text: text || deck + ' was already in ' + FILE.folder + '.', kind: kind });
+        return;
+      }
+      if (!text && deck) text = deck + ' is already open.';
+      if (text) toast(text, kind);
+      // Images the open deck was missing may have just arrived.
+      if (copied) { if (state.kind === 'html') reloadPreview(); else refresh(); }
+    });
+  }
+
+  function showFlash() {
+    var flash = null;
+    try {
+      flash = JSON.parse(sessionStorage.getItem(FLASH) || 'null');
+      sessionStorage.removeItem(FLASH);
+    } catch (err) {}
+    if (flash && flash.text) setTimeout(function () { toast(flash.text, flash.kind || null); }, 300);
+  }
+
+  if (FOLDER) {
+    document.documentElement.dataset.folder = 'on';
+    $('files-label').textContent = FILE.name;
+    $('btn-files').title = FILE.name + ' \\u00b7 open another deck from ' + FILE.folder + ', or copy files into it (' + CMD + ' O)';
+    $('btn-files').addEventListener('click', function (e) {
+      e.stopPropagation();
+      openFilesMenu();
+    });
+    menuKeys($('files-menu'));
+    $('files-menu').addEventListener('click', function (e) {
+      var b = e.target.closest ? e.target.closest('button') : null;
+      if (!b) return;
+      closeMenu();
+      if (b.id === 'files-upload') $('file-upload').click();
+      else if (b.dataset.file && b.dataset.file !== FILE.name) switchFile(b.dataset.file);
+    });
+    $('file-upload').addEventListener('change', function (e) {
+      uploadFiles(e.target.files);
+      e.target.value = '';
+    });
+  }
+
   function bootFromFile() {
     syncHighlightDoc();
     setDocKind(FILE.kind);
@@ -3900,9 +5290,22 @@ ${HIGHLIGHT_RUNTIME}
     if (FILE.watched && typeof EventSource !== 'undefined') {
       var es = new EventSource('/__events');
       es.onmessage = function (e) {
-        if (e.data === 'reload') loadFromDisk(true);
+        var msg = null;
+        try { msg = JSON.parse(e.data); } catch (err) {}
+        // Claude's own edits reload quietly; the chat already says so.
+        if (msg && msg.reload === FILE.name) loadFromDisk(!chatBusy);
       };
     }
+    if (CHAT) {
+      chatEmptyState();
+      if (lsGet(K.chat, '0') === '1') setChatOpen(true, true);
+    }
+    var missing = new URLSearchParams(location.search).get('missing');
+    if (missing !== null) {
+      history.replaceState(null, '', '/');
+      toast((missing || 'That file') + ' is no longer in ' + (FILE.folder || 'the folder') + ', so ' + FILE.name + ' opened instead.', 'warn');
+    }
+    showFlash();
     (state.kind === 'html' ? srcHtml : src).focus();
   }
 

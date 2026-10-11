@@ -35,6 +35,7 @@ import {
 } from "./rich-content.js";
 import { FRAGMENT_CSS, FRAGMENT_RUNTIME } from "./fragments.js";
 import { HIGHLIGHT_RUNTIME } from "./highlights.js";
+import { HTML_SLIDES_RUNTIME } from "./html-slides.js";
 
 export {
   DECOR_CSS,
@@ -71,12 +72,15 @@ function escAttr(str: string): string {
 }
 
 export function renderSlide(slide: Slide, index: number): string {
+  // The editor preview's source tags (see parseSlides' `map`); empty otherwise.
+  const tag = (key: string | undefined): string => (key ? ` data-dr-n="${key}"` : "");
+  const tags = slide.tags || { slide: "" };
   const bgStyle = slide.bgImage
     ? ` style="--slide-bg-url: url('${escAttr(slide.bgImage.src)}'); --slide-bg-opacity: ${slide.bgImage.opacity};"`
     : "";
 
   const bgLayer = slide.bgImage
-    ? `<div class="slide__bg" aria-hidden="true"></div>`
+    ? `<div class="slide__bg" aria-hidden="true"${tag(tags.bg)}></div>`
     : "";
 
   let innerHtml: string;
@@ -86,14 +90,14 @@ export function renderSlide(slide: Slide, index: number): string {
       <div class="slide__split">
         <div class="slide__content">${slide.html}</div>
         <div class="slide__image-panel" style="opacity:${slide.rightImage.opacity}">
-          <img src="${escAttr(slide.rightImage.src)}" alt="${escAttr(slide.rightImage.alt)}" />
+          <img src="${escAttr(slide.rightImage.src)}" alt="${escAttr(slide.rightImage.alt)}"${tag(tags.image)} />
         </div>
       </div>`;
   } else if (slide.leftImage) {
     innerHtml = `
       <div class="slide__split slide__split--left-image">
         <div class="slide__image-panel" style="opacity:${slide.leftImage.opacity}">
-          <img src="${escAttr(slide.leftImage.src)}" alt="${escAttr(slide.leftImage.alt)}" />
+          <img src="${escAttr(slide.leftImage.src)}" alt="${escAttr(slide.leftImage.alt)}"${tag(tags.image)} />
         </div>
         <div class="slide__content">${slide.html}</div>
       </div>`;
@@ -101,7 +105,7 @@ export function renderSlide(slide: Slide, index: number): string {
     innerHtml = `<div class="slide__content">${slide.html}</div>`;
   }
 
-  return `<div class="slide${slide.bgImage ? " slide--has-bg" : ""}" data-index="${index}"${bgStyle}>
+  return `<div class="slide${slide.bgImage ? " slide--has-bg" : ""}" data-index="${index}"${tag(tags.slide)}${bgStyle}>
   ${bgLayer}
   ${innerHtml}
 </div>`;
@@ -2671,12 +2675,17 @@ const DOC_CSS = `html, body {
  * canvas, blank canvas, blackout, fullscreen, and the controls overlay — on
  * top of it as fixed-position overlays. There is no HUD progress bar, slide
  * counter, overview grid, or arrow-key navigation, since there are no slides.
+ *
+ * `startSlide` opens a slide deck at that slide: the editor's "present from
+ * here" sends a copy whose slides carry `data-dr-slide`, the doc is asked for
+ * its `#n` hash, and a deck that ignores the hash is stepped there instead.
  */
 export function generateDocHtml(
   docUrl: string,
   title: string,
   autoFullscreen = false,
-  themeInput: ThemeName = DEFAULT_THEME
+  themeInput: ThemeName = DEFAULT_THEME,
+  startSlide: number | null = null
 ): string {
   const theme = resolveThemeName(themeInput);
 
@@ -2705,7 +2714,7 @@ ${PRESENTER_CSS}
 </head>
 <body>
 
-<iframe id="doc-frame" src="${escAttr(docUrl)}" title="${escAttr(title)}"></iframe>
+<iframe id="doc-frame" src="${escAttr(startSlide === null ? docUrl : `${docUrl}#${startSlide + 1}`)}" title="${escAttr(title)}"></iframe>
 
 <div id="hud">
   <div id="hud-row">
@@ -2847,11 +2856,15 @@ ${HIGHLIGHT_RUNTIME}
     erase: document.getElementById('btn-erase'),
   };
 
-  /** Click handler that drops focus, so Space does not re-trigger it. */
+  /**
+   * Click handler that hands focus back to the doc, so Space does not
+   * re-trigger the button and the doc's own keys keep working.
+   */
   function onClick(el, fn) {
     if (!el) return;
     el.addEventListener('click', function (e) {
       el.blur();
+      focusDoc();
       fn(e);
     });
   }
@@ -3513,12 +3526,53 @@ ${HIGHLIGHT_RUNTIME}
       }
     } catch (err) {}
     try {
-      elFrame.contentWindow.addEventListener('keydown', onKeydown);
+      elFrame.contentWindow.addEventListener('keydown', onFrameKeyCapture, true);
+      elFrame.contentWindow.addEventListener('keydown', onFrameKey);
       elFrame.contentWindow.addEventListener('pointermove', onPointerMove, { passive: true });
     } catch (err) {}
+    focusDoc();
   }
   elFrame.addEventListener('load', attachToFrame);
   attachToFrame();
+
+  /** Puts keyboard focus in the doc, so its own keys work without a click first. */
+  function focusDoc() {
+    try {
+      elFrame.focus();
+      elFrame.contentWindow.focus();
+    } catch (err) {}
+  }
+
+  // A doc that runs its own keyboard (a slide deck with arrows, ?, F, …)
+  // hears a key before this page's bubbling listener does, since its own
+  // listener sits lower in the frame. Three rules stop both acting on one
+  // press:
+  // - while one of deckrun's overlays is up, deckrun takes every key ahead
+  //   of the doc, so Space lifts a blackout without also turning a slide;
+  // - F is always deckrun's: fullscreen has to be on this page or the laser,
+  //   pen, and HUD are left outside it, and a doc's own request fails inside
+  //   an iframe that is not allowed fullscreen anyway;
+  // - otherwise a key the doc already handled, and so prevented, is its own.
+  function deckrunOwns(e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return false;
+    const k = e.key;
+    if (helpOn || blackOn || themesOpen()) return true;
+    if (k === 'f' || k === 'F') return true;
+    if (penOn && k.length === 1 &&
+        ((k >= '1' && k <= String(PEN_COLORS.length)) || 'eExX[]'.indexOf(k) >= 0)) return true;
+    return false;
+  }
+
+  function onFrameKeyCapture(e) {
+    if (!deckrunOwns(e)) return;
+    e.stopPropagation();
+    onKeydown(e);
+  }
+
+  function onFrameKey(e) {
+    if (e.defaultPrevented) return;
+    onKeydown(e);
+  }
 
   // ── Print export ─────────────────────────────────────────────────────
   // Doc-mode PDF/print targets the raw doc URL directly (no chrome, see
@@ -3529,6 +3583,31 @@ ${HIGHLIGHT_RUNTIME}
   syncTools();
 })();
 </script>
+${startSlide === null ? "" : docStartScript(startSlide)}
 </body>
 </html>`;
+}
+
+/** Steps a tagged deck to its opening slide once it loads, for a deck its hash did not move. */
+function docStartScript(start: number): string {
+  return `<script>
+${HTML_SLIDES_RUNTIME}
+(function () {
+  var frame = document.getElementById('doc-frame');
+  var done = false;
+  function ready() {
+    try {
+      var w = frame.contentWindow;
+      return w.location.href !== 'about:blank' && w.document.readyState !== 'loading';
+    } catch (e) { return false; }
+  }
+  function go() {
+    if (done || !ready()) return;
+    done = true;
+    DRSlides.goto(frame.contentWindow, ${Math.max(0, Math.floor(start))});
+  }
+  frame.addEventListener('load', go);
+  go();
+})();
+</script>`;
 }

@@ -19,7 +19,9 @@ import {
 } from "./themes.js";
 import { generateEditorHtml } from "./editor.js";
 import { generatePreviewHtml } from "./preview.js";
-import { findBrowser, renderPdfSerial, PdfError } from "./pdf.js";
+import { findBrowser, renderPdfSerial, renderPngSerial, PdfError } from "./pdf.js";
+import { chatBlockedReason, chatBusy, chatModelOk, findClaude, resetChat, runChatTurn, stopChat } from "./chat.js";
+import { deckKind, isDeckName, listDecks, saveUpload, type UploadResult } from "./folder.js";
 import {
   DEFAULT_TEMPLATE,
   DEFAULT_TRANSITION,
@@ -73,9 +75,17 @@ const MIME: Record<string, string> = {
   ".avif":  "image/avif",
   ".mp4":   "video/mp4",
   ".webm":  "video/webm",
+  ".mov":   "video/quicktime",
+  ".mp3":   "audio/mpeg",
+  ".wav":   "audio/wav",
+  ".ogg":   "audio/ogg",
+  ".m4a":   "audio/mp4",
+  ".bmp":   "image/bmp",
+  ".pdf":   "application/pdf",
   ".woff":  "font/woff",
   ".woff2": "font/woff2",
   ".ttf":   "font/ttf",
+  ".otf":   "font/otf",
 };
 
 function getMime(filepath: string): string {
@@ -127,7 +137,11 @@ function safeFilename(name: string): string {
 
 const MAX_BODY = 32 * 1024 * 1024;
 
-function readBody(req: IncomingMessage): Promise<string> {
+async function readBody(req: IncomingMessage): Promise<string> {
+  return (await readBodyBytes(req)).toString("utf-8");
+}
+
+function readBodyBytes(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolveBody, rejectBody) => {
     const chunks: Buffer[] = [];
     let size = 0;
@@ -145,7 +159,7 @@ function readBody(req: IncomingMessage): Promise<string> {
       chunks.push(chunk);
     });
     req.on("end", () => {
-      if (!overflowed) resolveBody(Buffer.concat(chunks).toString("utf-8"));
+      if (!overflowed) resolveBody(Buffer.concat(chunks));
     });
     req.on("error", rejectBody);
   });
@@ -187,6 +201,10 @@ interface EditorMode {
   transition: TransitionName;
   fullscreen: boolean;
   file?: EditorFile;
+  /** The opened file's folder: its other decks can be opened, and uploads land in it. */
+  dir?: string;
+  /** Claude Code was found and --no-chat was not given; each file still has to pass chatFor. */
+  chat?: boolean;
   /** Filled in once the port is known, so PDF rendering can reach the deck. */
   origin?: string;
 }
@@ -215,10 +233,11 @@ function vendorAsset(pathname: string): string | null {
 /** Editor tabs holding an open /__events stream, waiting on a reload ping. */
 const liveClients = new Set<ServerResponse>();
 
-function notifyLiveClients(): void {
+/** Each tab reloads only when the change is to the file it has open. */
+function notifyLiveClients(name: string): void {
   for (const client of liveClients) {
     try {
-      client.write("data: reload\n\n");
+      client.write(`data: ${JSON.stringify({ reload: name })}\n\n`);
     } catch {
       liveClients.delete(client);
     }
@@ -226,40 +245,87 @@ function notifyLiveClients(): void {
 }
 
 /**
- * The content most recently written to the file by the editor itself, so
+ * The content most recently written to each file by the editor itself, so
  * the watcher can tell the editor's own save landing on disk apart from an
  * external edit and not bounce it back as a reload.
  */
-let lastEditorWrite: string | null = null;
+const lastEditorWrite = new Map<string, string>();
 
 /**
- * Watches the opened file and pings the editor when it changes on disk.
+ * Watches the decks in the opened file's folder and pings the editor when
+ * one changes on disk.
  *
- * The parent directory is watched rather than the file itself so editors
- * that save by atomic rename (vim, VS Code, …) do not silently detach the
- * watcher. Events are debounced because a single save fires several.
+ * The directory is watched rather than each file so editors that save by
+ * atomic rename (vim, VS Code, …) do not silently detach the watcher, and so
+ * a deck opened later from the files menu is covered too. Events are
+ * debounced per file because a single save fires several.
  */
-function watchSourceFile(absPath: string): void {
-  const name = basename(absPath);
-  let timer: NodeJS.Timeout | undefined;
+function watchFolder(dir: string): void {
+  const timers = new Map<string, NodeJS.Timeout>();
   try {
-    watch(dirname(absPath), (_event, filename) => {
-      if (filename && filename !== name) return;
-      clearTimeout(timer);
-      timer = setTimeout(() => {
+    watch(dir, (_event, filename) => {
+      if (!filename || !isDeckName(filename)) return;
+      clearTimeout(timers.get(filename));
+      timers.set(filename, setTimeout(() => {
+        timers.delete(filename);
         let content: string;
         try {
-          content = readFileSync(absPath, "utf-8");
+          content = readFileSync(join(dir, filename), "utf-8");
         } catch {
           return; // mid-save window of an atomic rename; the next event retries
         }
-        if (content === lastEditorWrite) return; // our own save landing
-        notifyLiveClients();
-      }, 150);
+        if (content === lastEditorWrite.get(filename)) return; // our own save landing
+        notifyLiveClients(filename);
+      }, 150));
     });
   } catch {
-    console.error(`${c.dim}deckrun: cannot watch '${name}' for changes; live reload is off.${c.reset}`);
+    console.error(`${c.dim}deckrun: cannot watch '${basename(dir)}' for changes; live reload is off.${c.reset}`);
   }
+}
+
+/**
+ * The document a request is about. `?file=` names a deck in the opened
+ * file's folder, so each editor tab works on its own file; without it, it is
+ * the file deckrun was launched with. Undefined when the named deck is not
+ * in the folder.
+ */
+function docFor(mode: EditorMode, query: URLSearchParams): EditorFile | null | undefined {
+  const wanted = query.get("file");
+  if (wanted === null || !mode.dir || !mode.file?.path) return mode.file ?? null;
+  if (wanted === mode.file.name) return mode.file;
+  let listed = false;
+  try {
+    listed = listDecks(mode.dir).some((entry) => entry.name === wanted);
+  } catch {}
+  if (!listed) return undefined;
+  return { name: wanted, kind: deckKind(wanted), path: join(mode.dir, wanted), watched: mode.file.watched };
+}
+
+/** The chat panel can edit this document. */
+function chatFor(mode: EditorMode, doc: EditorFile): boolean {
+  return !!mode.chat && !!doc.path && !chatBlockedReason(doc.name);
+}
+
+/**
+ * Same origin only, for routes that write to disk or spend the person's
+ * Claude usage: another site's page must not be able to drive them.
+ */
+function sameOrigin(mode: EditorMode, req: IncomingMessage): boolean {
+  const origin = req.headers.origin;
+  const allowed = mode.origin ? [mode.origin, mode.origin.replace("127.0.0.1", "localhost")] : [];
+  return !!origin && allowed.includes(origin);
+}
+
+function forbidden(res: ServerResponse): true {
+  res.writeHead(403, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ error: "forbidden" }));
+  return true;
+}
+
+function notInFolder(res: ServerResponse): true {
+  res.writeHead(404, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ error: "missing", detail: "That file is no longer in the folder." }));
+  return true;
 }
 
 /** Decks built from editor content, addressable so a new tab can load them. */
@@ -295,9 +361,24 @@ function serveStashedDeck(id: string, res: ServerResponse): void {
   sendHtml(res, html);
 }
 
+/** Pictures of slides rendered for the chat's /look, kept until a few newer ones replace them. */
+const looks = new Map<number, Buffer>();
+let lookSeq = 0;
+
+function keepLook(png: Buffer): number {
+  const id = ++lookSeq;
+  looks.set(id, png);
+  for (const key of looks.keys()) {
+    if (looks.size <= 6) break;
+    looks.delete(key);
+  }
+  return id;
+}
+
 async function handleEditorRoute(
   mode: EditorMode,
   pathname: string,
+  query: URLSearchParams,
   req: IncomingMessage,
   res: ServerResponse
 ): Promise<boolean> {
@@ -310,17 +391,19 @@ async function handleEditorRoute(
   }
 
   if (pathname === "/__file" && req.method === "GET" && mode.file) {
+    const doc = docFor(mode, query);
+    if (!doc) return notInFolder(res);
     let content: string;
-    if (mode.file.path) {
+    if (doc.path) {
       try {
-        content = readFileSync(mode.file.path, "utf-8");
+        content = readFileSync(doc.path, "utf-8");
       } catch {
         res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
         res.end("Cannot read the file.");
         return true;
       }
     } else {
-      content = mode.file.content ?? "";
+      content = doc.content ?? "";
     }
     res.writeHead(200, {
       "Content-Type": "text/plain; charset=utf-8",
@@ -331,16 +414,19 @@ async function handleEditorRoute(
   }
 
   if (pathname === "/__file" && req.method === "POST" && mode.file) {
-    if (!mode.file.path) {
+    const doc = docFor(mode, query);
+    if (!doc) return notInFolder(res);
+    if (!doc.path) {
       res.writeHead(405, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "read-only", detail: "This document came from a URL; download it to keep changes." }));
       return true;
     }
+    if (!sameOrigin(mode, req)) return forbidden(res);
     const content = await readBody(req);
     // Remember the write before it lands so the watcher can ignore its echo.
-    lastEditorWrite = content;
+    lastEditorWrite.set(doc.name, content);
     try {
-      writeFileSync(mode.file.path, content, "utf-8");
+      writeFileSync(doc.path, content, "utf-8");
     } catch {
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "write failed" }));
@@ -362,13 +448,165 @@ async function handleEditorRoute(
     return true;
   }
 
+  if (pathname === "/__files" && req.method === "GET" && mode.dir) {
+    try {
+      sendJson(res, { folder: basename(mode.dir), path: mode.dir, files: listDecks(mode.dir) });
+    } catch {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "cannot list the folder" }));
+    }
+    return true;
+  }
+
+  if (pathname === "/__upload" && req.method === "POST" && mode.dir) {
+    if (!sameOrigin(mode, req)) return forbidden(res);
+    const data = await readBodyBytes(req);
+    let result: UploadResult;
+    try {
+      result = saveUpload(mode.dir, query.get("name") ?? "", data, query.get("replace") === "1");
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "write failed", detail: err instanceof Error ? err.message : "" }));
+      return true;
+    }
+    if (result.status === "refused") {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "refused", detail: result.reason }));
+      return true;
+    }
+    sendJson(res, result);
+    return true;
+  }
+
+  // /look: one slide, rendered by the same headless browser as the PDF
+  // export, for Claude to see. The page sends the slide on its own (the deck
+  // reduced to it, as for a thumbnail); the picture stays here, and the chat
+  // message names it by id.
+  if (pathname === "/__look" && mode.chat && mode.file?.path) {
+    if (req.method === "GET") {
+      const png = looks.get(parseInt(query.get("id") ?? "", 10));
+      if (!png) {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("This picture has expired.");
+        return true;
+      }
+      res.writeHead(200, { "Content-Type": "image/png", "Content-Length": png.length, "Cache-Control": "no-store" });
+      res.end(png);
+      return true;
+    }
+    if (req.method !== "POST") return false;
+    if (!sameOrigin(mode, req)) return forbidden(res);
+    let body: { html?: string };
+    try {
+      body = JSON.parse(await readBody(req));
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "bad request" }));
+      return true;
+    }
+    const html = typeof body.html === "string" ? body.html : "";
+    if (!html.trim()) {
+      res.writeHead(422, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "empty document" }));
+      return true;
+    }
+    const browser = await findBrowser();
+    if (!browser) {
+      res.writeHead(501, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        error: "no browser",
+        detail: "/look needs Chrome, Chromium, Edge, or Brave. Set DECKRUN_BROWSER to one.",
+      }));
+      return true;
+    }
+    try {
+      const png = await renderPngSerial(`${mode.origin}${stashDeck(html)}`, browser, 1280, 720);
+      sendJson(res, { id: keepLook(png), width: 1280, height: 720 });
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "render failed", detail: (err as Error).message }));
+    }
+    return true;
+  }
+
+  if (pathname.startsWith("/__chat") && req.method === "POST" && mode.chat && mode.file?.path) {
+    // Same origin only: this route spends the person's Claude usage and
+    // edits a file.
+    if (!sameOrigin(mode, req)) return forbidden(res);
+    if (pathname === "/__chat/stop") {
+      sendJson(res, { stopped: stopChat() });
+      return true;
+    }
+    const doc = docFor(mode, query);
+    if (!doc) return notInFolder(res);
+    if (!chatFor(mode, doc)) return forbidden(res);
+    if (pathname === "/__chat/reset") {
+      if (!chatBusy()) resetChat(doc.path!);
+      sendJson(res, { ok: !chatBusy() });
+      return true;
+    }
+    if (pathname !== "/__chat") return false;
+    if (chatBusy()) {
+      res.writeHead(409, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "busy", detail: "Claude is still working on the last message." }));
+      return true;
+    }
+    let body: { message?: string; context?: string; model?: string; look?: number };
+    try {
+      body = JSON.parse(await readBody(req));
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "bad request" }));
+      return true;
+    }
+    const message = (body.message ?? "").trim();
+    if (!message) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "empty message" }));
+      return true;
+    }
+    // "default" is Claude Code's own choice, the same as naming none.
+    const model = typeof body.model === "string" && body.model !== "default" ? body.model : "";
+    if (model && !chatModelOk(model)) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "bad model", detail: `'${model.slice(0, 40)}' is not a model name.` }));
+      return true;
+    }
+    const image = typeof body.look === "number" ? looks.get(body.look) : undefined;
+    if (body.look !== undefined && !image) {
+      res.writeHead(410, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "expired", detail: "That picture of the slide has expired. Type /look again." }));
+      return true;
+    }
+    res.writeHead(200, {
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+      "Cache-Control": "no-store",
+    });
+    await runChatTurn({
+      filePath: doc.path!,
+      kind: doc.kind,
+      message,
+      // Room for a slide's source, which the page already trims to a few kilobytes.
+      context: typeof body.context === "string" ? body.context.slice(0, 16000) : undefined,
+      model: model || undefined,
+      image,
+      send: (event) => {
+        if (!res.writableEnded) res.write(JSON.stringify(event) + "\n");
+      },
+    });
+    res.end();
+    return true;
+  }
+
   if (pathname === "/__parse" && req.method === "POST") {
     const markdown = await readBody(req);
-    const slides = parseSlides(markdown);
+    // Mapped: the preview's elements carry source tags for the inspector.
+    const slides = parseSlides(markdown, { map: true });
     sendJson(res, {
       slides: slides.map((slide, i) => renderSlide(slide, i)),
       notes: slides.map((slide) => slide.notes ?? ""),
       title: deckTitle(slides, ""),
+      map: slides.map((slide) => slide.map ?? []),
     });
     return true;
   }
@@ -582,6 +820,8 @@ async function handleEditorRoute(
       theme?: string;
       title?: string;
       print?: boolean;
+      /** Open a slide deck at this slide (its position among the slides shown). */
+      start?: number;
     };
     const raw = body.html ?? "";
     if (!raw.trim()) {
@@ -592,9 +832,10 @@ async function handleEditorRoute(
     const theme = resolveThemeName(body.theme);
     const title = docTitle(raw, body.title?.trim() || "deckrun");
     const forPrint = body.print === true;
+    const start = !forPrint && typeof body.start === "number" && body.start >= 0 ? Math.floor(body.start) : null;
     const docPath = stashDeck(raw);
     const wrapperPath = stashDeck(
-      generateDocHtml(docPath, title, forPrint ? false : mode.fullscreen, theme)
+      generateDocHtml(docPath, title, forPrint ? false : mode.fullscreen, theme, start)
     );
     sendJson(res, { path: forPrint ? `${wrapperPath}&print=1` : wrapperPath, docPath });
     return true;
@@ -662,20 +903,32 @@ async function serve(mode: Mode, baseDir: string, port: number): Promise<string>
 
       if (pathname === "/" || pathname === "/index.html") {
         const wantsDeck = query.get("deck");
-        if (wantsDeck) serveStashedDeck(wantsDeck, res);
-        else sendHtml(
+        if (wantsDeck) {
+          serveStashedDeck(wantsDeck, res);
+          return;
+        }
+        const doc = docFor(mode, query);
+        if (doc === undefined) {
+          // Renamed or deleted since the link was made: open the launch file and say why.
+          res.writeHead(302, { Location: `/?missing=${encodeURIComponent(query.get("file") ?? "")}` });
+          res.end();
+          return;
+        }
+        sendHtml(
           res,
           generateEditorHtml(
             mode.theme,
             mode.fonts,
             mode.template,
             mode.transition,
-            mode.file
+            doc
               ? {
-                  name: mode.file.name,
-                  kind: mode.file.kind,
-                  writable: !!mode.file.path,
-                  watched: mode.file.watched,
+                  name: doc.name,
+                  kind: doc.kind,
+                  writable: !!doc.path,
+                  watched: doc.watched,
+                  chat: chatFor(mode, doc),
+                  folder: mode.dir ? basename(mode.dir) : undefined,
                 }
               : null
           )
@@ -699,7 +952,7 @@ async function serve(mode: Mode, baseDir: string, port: number): Promise<string>
         return;
       }
 
-      if (await handleEditorRoute(mode, pathname, req, res)) {
+      if (await handleEditorRoute(mode, pathname, query, req, res)) {
         return;
       }
 
@@ -745,6 +998,7 @@ program
   .option("-p, --port <number>", "Port to serve on", "7890")
   .option("--no-open", "Do not automatically open the browser")
   .option("--no-watch", "Do not watch the opened file for changes on disk")
+  .option("--no-chat", "Hide the Claude chat panel that edits the opened file")
   .option("--fullscreen", "Auto-enter fullscreen on first interaction")
   .option("--theme <name>", "Color theme, by id (see --list-themes)", DEFAULT_THEME)
   .option("--head-font <name>", "Override the theme's heading face (see --list-fonts)")
@@ -762,6 +1016,7 @@ program
         port: string;
         open: boolean;
         watch: boolean;
+        chat: boolean;
         fullscreen?: boolean;
         theme: string;
         headFont?: string;
@@ -954,9 +1209,16 @@ program
             transition,
             fullscreen,
             file: { name: basename(absPath), kind, path: absPath, watched: opts.watch },
+            dir: baseDir,
           };
 
-          if (opts.watch) watchSourceFile(absPath);
+          if (opts.chat && findClaude()) {
+            mode.chat = true;
+            const blocked = chatBlockedReason(basename(absPath));
+            if (blocked) console.log(`${c.dim}chat is off for this file: ${blocked}.${c.reset}`);
+          }
+
+          if (opts.watch) watchFolder(baseDir);
 
           if (kind === "markdown") {
             const slides = parseSlides(raw);
@@ -989,6 +1251,14 @@ program
             `${c.dim}edits to ${mode.file.name} on disk reload the editor as well.${c.reset}`
           );
         }
+        if (chatFor(mode, mode.file)) {
+          console.log(
+            `${c.dim}Cmd/Ctrl+J opens a Claude chat that edits ${mode.file.name}, using your Claude Code login.${c.reset}`
+          );
+        }
+        console.log(
+          `${c.dim}Cmd/Ctrl+O opens another deck from ${basename(baseDir)}; drop files on the editor to copy them in.${c.reset}`
+        );
       } else {
         console.log(
           `${c.dim}write on the left, live deck on the right. autosaves to your browser.${c.reset}`

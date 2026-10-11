@@ -4,6 +4,7 @@ Write slides in Markdown or bring a self-contained HTML document, run a local se
 
 - **Two formats** - Markdown decks with slide-by-slide presentation, or self-contained HTML documents with continuous scrolling
 - **Live editor** - edit alongside a live preview, with autosave and a library of all your decks and docs
+- **Inspect** - hover the source to see its element on the slide, or pick an element on the slide to jump to its source, as in Chrome's DevTools
 - **14 themes** - unique palettes, typography, animated backdrops, and customizable heading and body fonts
 - **Templates and motion** - four composition templates and five transitions, switchable without touching the Markdown
 - **Technical content** - KaTeX equations and Mermaid diagrams in preview, presentation, HTML, and PDF
@@ -13,7 +14,8 @@ Write slides in Markdown or bring a self-contained HTML document, run a local se
 - **Highlights and comments** - marker-pen text in the preview or on the projector and hang a note off it, kept in the browser session and gone when the tab closes
 - **Notes while presenting** - present from the editor and its preview and notes panel follow the deck tab, so the editor is your notes screen
 - **Export** - Markdown, HTML, headless-rendered PDF, or a standalone presenter-ready HTML page
-- **Local-first** - binds only to `127.0.0.1`; nothing is uploaded, and your work stays in browser local storage until export
+- **Claude chat** - open a file and ask Claude to change it from a side panel; it runs on your own Claude Code login and can edit only that one file
+- **Local-first** - binds only to `127.0.0.1`; nothing is uploaded unless you send a chat message, and your work stays in browser local storage until export
 
 ![Slide showing a code-heavy presentation with syntax highlighting](https://github.com/user-attachments/assets/e61d23e7-3f35-46c9-95a0-ce4976b6179c)
 
@@ -114,7 +116,9 @@ rather than the browser library: what you type autosaves back to the file,
 and edits made to the file on disk — from your own editor, a build step, an
 agent — reload the deckrun editor and its live preview. Pass `--no-watch`
 to turn off the disk watching. Presenting (`Cmd/Ctrl+Enter`) works exactly
-as it does for library decks. A document fetched from a URL opens the same
+as it does for library decks. The other decks in the file's folder open from
+the top bar, and files dropped on the editor are copied into that folder (see
+[The folder of an opened file](#the-folder-of-an-opened-file)). A document fetched from a URL opens the same
 way, but read-only toward its origin: nothing is written back, so download
 or duplicate it to keep changes.
 
@@ -136,6 +140,7 @@ The server binds to `127.0.0.1` only, so the deck is never exposed on the networ
 | `-p, --port <number>` | `7890`  | Port to serve the presentation on                      |
 | `--no-open`           | `false` | Start the HTTP server without opening the browser      |
 | `--no-watch`          | `false` | Do not watch the opened file for changes on disk       |
+| `--no-chat`           | `false` | Hide the [Claude chat](#chat-with-claude) panel for the opened file |
 | `--fullscreen`        | `false` | Prompt to enter fullscreen on the first key or click   |
 | `--theme <name>`      | `nord`     | Any of the fourteen themes, by id                   |
 | `--head-font <name>`  |         | Override the theme's heading and title face             |
@@ -239,13 +244,122 @@ The guide and the palette carry every directive, so the layouts are one keystrok
 
 Alongside Markdown decks, deckrun can present a second kind of document: a self-contained HTML page with no slide boundaries — a single continuous doc, not a series of slides. There is no blank-slate option: get one into the editor from the start screen by uploading a `.html` file or pointing it at a public HTML URL (fetched server-side, so the page's own CORS policy does not matter), by dropping a `.html` file onto the editor, or on the CLI with `deckrun page.html`.
 
-Editing is a plain source pane on the left and a live preview on the right — no syntax highlighting, gutter, guide drawer, or command palette, since there are no slide-authoring directives to catalogue. The preview updates from the textarea directly, with no server round trip.
+Editing is a plain source pane on the left and a live preview on the right — no syntax highlighting, gutter, guide drawer, or command palette, since there are no slide-authoring directives to catalogue. The preview updates from the textarea directly, with no server round trip. A doc that is a slide deck also gets a slide panel; see [Slides in an HTML deck](#slides-in-an-html-deck).
 
 Presenting wraps the doc in an iframe and layers the tool belt that still makes sense with no slides — laser pointer, pen, blank canvas, blackout, fullscreen, and `?` for controls — on top of it. There is no HUD, slide counter, overview grid, or arrow-key navigation, since there is nothing to count or step through.
 
 A doc authored in the browser editor is expected to be self-contained: inline styles and scripts, and assets from a CDN or a `data:` URI rather than a relative local path, since editor-mode present and PDF serve it from an in-memory copy, not from a folder on disk. A file passed on the CLI does not have that restriction — `deckrun page.html` serves assets from the file's own directory, exactly like a Markdown deck's images, so `<img src="diagram.png">` next to `page.html` resolves normally.
 
-If a doc runs its own script that listens for keyboard input — an embedded framework, a game, a chart with its own shortcuts — it may end up racing deckrun's own listener for a key, since both are attached to the same page. Presenter shortcuts are best-effort in that case, not guaranteed to win.
+If a doc runs its own script that listens for keyboard input — a self-contained slide deck with its own arrow keys, an embedded framework, a game — both it and deckrun hear every key. The doc has keyboard focus as soon as it loads, so its own keys work without a click first, and three rules keep one press from doing two things:
+
+- While one of deckrun's overlays is up (controls, blackout, the theme picker), deckrun takes every key before the doc sees it, so Space lifts a blackout without also turning a slide.
+- `F` is always deckrun's, so the laser, pen, and tool belt stay visible in fullscreen.
+- Otherwise a key the doc handles itself is left to the doc. A deck with its own `?` help shows that; deckrun's controls are still on `H` and the `?` button.
+
+### Slides in an HTML deck
+
+When the HTML doc is itself a slide deck, the editor manages its slides the way PowerPoint does. A bar above the preview and a rail of live thumbnails beside it appear on their own; a page with no slides looks exactly as before.
+
+A slide is any element with the class `slide`, or, when there are none, each outermost `<section>`. deckrun moves it together with the wrapper that holds only it, so `<div class="slot"><section class="slide">…</section></div>` stays one piece, and with the comment directly above it, so `<!-- ===== 3. Results ===== -->` stays with its slide.
+
+| Action | How |
+| --- | --- |
+| Select | Click a thumbnail. `Shift` click selects a range, `Cmd` click adds or removes one, and `Cmd A` selects them all. Arrows move between slides. |
+| New slide | `Cmd M`, `Enter` in the rail, or `+ slide`. The new slide uses the current slide's wrapper and heading style, with an empty title and body. |
+| New slide from a layout | The `▾` beside `+ slide` lists every design in the deck, each with its words, notes, and pictures replaced by placeholders. |
+| Write a slide with Claude | Describe it under the layouts and Claude adds it after the current slide in the deck's own markup, with speaker notes. This needs the chat panel. |
+| Duplicate | `Cmd D`. The copies go after the last selected slide, and an `id` the copy repeats gets a numeric suffix. |
+| Delete | `Delete` or `Backspace`. A deck always keeps at least one slide. |
+| Reorder | Drag thumbnails, or `Cmd ↑` / `Cmd ↓` to move by one and `Cmd Shift ↑` / `Cmd Shift ↓` to move to the start or end. |
+| Cut, copy, paste | `Cmd X`, `Cmd C`, `Cmd V`. A copied slide is its HTML on the clipboard, so it pastes into another deck or into a text editor. |
+| Hide | Right-click, `Hide slide`. A hidden slide stays in the file but is skipped when presenting. |
+| Speaker notes | The box under the preview edits the slide's `data-note` (or `data-notes`, or a reveal.js `<aside class="notes">`), escaped as needed. A slide with no notes gets them in the form the rest of the deck uses. |
+| Edit text on the slide | Double-click any text in the preview and type. `Enter` adds a line break, and `Esc` or a click elsewhere finishes. The deck never hears these keys, so `Space` types a space instead of turning the slide. |
+| Slide sorter | `sorter` shows every slide in a grid for moving many at once. Double-click a slide to open it. |
+| Present from here | `Cmd Shift Enter` or `▶ from here`. `Cmd Enter` still presents from the start. |
+| Undo | `Cmd Z` and `Cmd Shift Z` / `Cmd Y`, with one history for all of the above and for typing in the source. Reloads from disk, including Claude's edits, are undoable too. |
+
+The right-click menu also has `Show in source`, which puts the source caret at the slide. Moving the caret in the source selects the slide it is in, and turning slides with the deck's own keys in the preview moves the selection along. The preview stays on the selected slide when the source changes, instead of returning to slide 1.
+
+Every operation rewrites the slides in the source and leaves everything else in the file exactly as you wrote it. Numbered comments are renumbered when they count up from 0 or 1 without gaps, ignoring slides that have no number. A deck that numbers its own way, such as `11a` and `11b`, is left alone.
+
+A hidden slide is wrapped in `<template data-deckrun-hidden>`. A browser never renders template content, and `querySelectorAll` does not find it, so the deck's own script skips the slide with no change to that script. The editor preview shows hidden slides anyway, as PowerPoint does, with a `hidden` badge on the thumbnail.
+
+Thumbnails and the preview run the deck's own script, so deckrun finds slides without knowing how the deck works. To show a slide it first sets `#n`, the hash most hand-written decks read. If the deck does not respond to that, deckrun presses its arrow keys, and as a last resort scrolls the slide into view.
+
+### Inspect: from the source to the slide and back
+
+The source and the preview point at each other, the way Chrome's DevTools links its Elements panel to the page. This works for Markdown decks and HTML docs alike.
+
+- **Hover the source.** The element under the mouse is outlined on the slide in DevTools' colors (margin orange, border yellow, padding green, content blue), with a label such as `h2.title 640 × 80` that gives its size in the deck's own CSS pixels. Its source lines are tinted too. Any point on a line counts, including the indentation and the space past the end. If the element is on a slide the preview is not showing, a note names that slide.
+- **Inspect mode** (`Cmd Shift X`, or the `inspect` button) works the other way. Hover the slide to color the element's source lines and scroll them into view, and click to put the caret there. The click also ends the mode, as do `Esc` and a right-click. While the mode is on, the deck never sees the pointer, so a click does not turn the slide.
+- **The caret's element** keeps a dashed outline on the slide while you type.
+- **The status bar** shows that element's path, such as `body › div.slot › section.slide › h2`. Hover a part to outline it, and click it to put the caret on that element.
+
+In a Markdown deck the elements are the blocks Markdown makes: headings, paragraphs, lists and each of their items, quotes, code, tables and their rows, images, links, and every element of raw HTML. Only the preview's copy carries the tags that make this work (`data-dr-n`). The file, an export, and a presented deck never do.
+
+### Chat with Claude
+
+Open a file on the CLI and the editor offers a chat panel (`Cmd J`, or the `claude` button) where you ask for changes in plain language: "make the title on this slide shorter", "rewrite the speaker notes in natural spoken English", "fix the typos in the whole deck". Claude edits the file on disk, and the preview reloads as it does, the same way it does for an edit made in any other editor.
+
+```bash
+deckrun talk.html     # Cmd/Ctrl+J opens the chat
+deckrun talk.md --no-chat
+```
+
+It uses [Claude Code](https://claude.com/claude-code), so it needs `claude` installed and signed in. It runs on whatever that is signed in with, a Pro or Max subscription or an API key, and deckrun never sees a credential. Each message runs one headless `claude -p` turn in the file's folder, confined on purpose:
+
+- It can read the files in that folder, such as the images a deck uses, but edit only the open file. Anything else it tries is refused, and the panel says what was blocked.
+- It cannot run commands or fetch pages, and your own Claude Code settings, hooks, and MCP servers are not loaded for it (`--restricted`), so a broad rule there cannot widen this.
+- The editor is read-only while Claude works, and `stop` ends the turn, keeping edits it already made.
+- A conversation carries on across messages until `new chat` or a restart. Each deck in the folder keeps its own, so switching decks and back picks it up again.
+
+**What "this" means.** A request is about the slide in the preview unless it names other slides or the whole deck. Each message goes with that slide's line range and source, so Claude reads only those lines rather than the whole file. When you have singled out something narrower, that becomes the target, and the tag under your message shows which one, such as `→ slide 5 · h2.title`:
+
+| You did | Claude is told |
+| --- | --- |
+| Selected code in the editor | Those lines |
+| Selected text on the slide | That text, and the element it is in |
+| Put the caret in an element, or picked one with inspect (`Cmd Shift X`) | That element |
+| Nothing | The whole slide |
+
+A caret or selection left over from before Claude's last edit no longer counts, since the text under it has moved. If a request could mean different things and a wrong guess would have to be undone, Claude asks first, and its likely answers appear as buttons.
+
+**Slash commands.** Type `/` in the chat for the list, as in Claude Code, or press `/` anywhere outside a text box, the preview included, to open the chat at it. The list narrows as you type. Arrow keys move through it and `Esc` closes it. `Enter` runs the highlighted command, or waits for its words when it needs some; `Tab` only completes it, leaving room to type more. After `/model ` the list shows the models, and after `/slide ` it shows the slides by number and title. While you type a command's words, a reminder of what it takes stays above the box. A command typed with the Korean input method still on, such as `/ㅡㅐㅇ디`, is read as the keys that typed it (`/model`).
+
+| Command | Does |
+| --- | --- |
+| `/slide <n> [request]` | Shows slide n; anything after the number is sent about that slide |
+| `/look [request]` | Sends Claude a picture of the slide as it renders, with the request, or asks what looks wrong when there is none |
+| `/deck <request>` | Makes the whole deck the target instead of one slide |
+| `/undo` | Undoes Claude's latest change that is still in place |
+| `/model [name] [request]` | Picks the model for the messages that follow (`default`, `fable`, `opus`, `sonnet`, `haiku`, or a full model ID); with a request, that model answers just that one |
+| `/context` | Shows what the next message would be about, without sending anything |
+| `/clear` | Starts a new chat |
+| `/stop` | Stops Claude mid-turn |
+| `/help` | Lists these |
+
+**Letting Claude see the slide.** Claude edits the source and cannot see what it renders to, so it cannot tell when text overflows its box or two elements overlap. `/look` shows it: deckrun reduces the deck to the slide in the preview, as for its thumbnail, renders it at 1280×720 in the same headless browser the PDF export uses, and sends the picture with your message. The picture appears under your message too, so you see what Claude saw. This needs Chrome, Chromium, Edge, or Brave on the machine (`DECKRUN_BROWSER` points at one elsewhere). It works on HTML slide decks.
+
+**Models.** The chat header shows the model in use; click it, or type `/model`, to change it. The choice is kept in this browser for later sessions. `default` leaves it to Claude Code's own setting, or to `DECKRUN_CLAUDE_MODEL` when that is set.
+
+**After each turn** the panel lists the slides it changed (click one to show it), flashes their thumbnails in the slide rail, and offers `undo`. Undo puts the file back to how it was before that message, and the button becomes `redo`. Undoing an earlier turn also undoes the turns after it, and asks first if the file has changed since. Claude is told about an undo with your next message, so it does not build on a change that is gone.
+
+Your message and the file go to Anthropic, the same as when you use Claude Code directly; nothing is sent until you press send. The panel is offered only for a file opened on the CLI, since a deck kept in browser storage has no file to edit. `DECKRUN_CLAUDE` points at a `claude` that is not on your PATH, and `DECKRUN_CLAUDE_MODEL` picks the model (`sonnet`, `opus`, …); otherwise it is Claude Code's default.
+
+### The folder of an opened file
+
+A file opened on the CLI brings its folder along. The name in the top bar is a menu (`Cmd O`) that lists every `.html` and `.md` deck beside it, so you can move to the next talk without restarting deckrun.
+
+```bash
+deckrun ~/talks/0_intro.html   # Cmd/Ctrl+O lists 1_part_one.html, 2_part_two.html, …
+```
+
+- Picking a deck saves the open one first, then opens the new one in the same tab at `/?file=<name>`. It saves back to its own file, reloads on its own disk edits, and gets its own chat. Back returns to the last one.
+- Each tab works on the file in its own address, so two tabs on two decks never write over each other.
+- `upload…` in that menu, or dropping files onto the editor, copies them into the folder and opens the first deck among them. Drop a deck together with its images and they land side by side, so the images load.
+- An upload never overwrites a deck: one under a name already taken lands as `name (2).html`. An image or other asset under a taken name asks first; replacing it keeps the old one in `.deckrun-backup/`, stamped with the time.
+- Uploads take decks plus the files a deck uses (images, audio and video, fonts, CSS, JS, JSON, PDF). Anything else is skipped and named in the toast.
 
 ### The deck library
 
@@ -308,6 +422,10 @@ An HTML doc's PDF is not paginated to 16:9 slides — it prints the doc's own `@
 | `Cmd O`             | Deck library               |
 | `Cmd /`             | Guide drawer               |
 | `Cmd Enter`         | Present in a new tab       |
+| `Cmd J`             | Claude chat (a file opened on the CLI) |
+| `Cmd M`             | New slide (HTML deck)      |
+| `Cmd Shift Enter`   | Present from the selected slide (HTML deck) |
+| `Cmd Shift X`       | [Inspect](#inspect-from-the-source-to-the-slide-and-back) mode: pick an element on the slide to find its source |
 | `Cmd S`             | Export Markdown            |
 | `Cmd Shift S`       | Export PDF                 |
 | `Cmd D`             | New slide                  |
@@ -332,12 +450,14 @@ The editor adds a few endpoints under `/__`, all local:
 | Route             | Purpose                                                            |
 | ------------------ | ------------------------------------------------------------------ |
 | `/__preview`       | The iframe that renders slides with the deck stylesheet              |
-| `/__parse`         | POST Markdown, get back rendered slides and notes                    |
+| `/__parse`         | POST Markdown, get back rendered slides, notes, and each element's source range for the inspector |
 | `/__present`       | POST Markdown, get back the path to a freshly built deck              |
 | `/__pdf`           | POST Markdown, get back a rendered PDF                                |
 | `/__present-doc`   | POST an HTML doc, get back the path to its presenter-wrapped page     |
 | `/__pdf-doc`       | POST an HTML doc, get back a rendered PDF of the doc itself            |
 | `/__fetch-doc`     | POST a public URL, get back that page's HTML, fetched server-side     |
+| `/__chat`          | POST a chat message, get back the Claude turn as NDJSON; same-origin only. `/__chat/stop` and `/__chat/reset` end the turn or the conversation |
+| `/__look`          | POST one slide's HTML, get back the id of its 1280×720 picture; GET `?id=` serves the PNG. Same-origin only for POST |
 | `/?deck=<n>`       | A built deck or stashed doc, kept in memory. The last eight are retained |
 
 A built deck is served from `/` rather than a subpath on purpose. Served from `/__deck/1`, a slide's `![](diagram.png)` would resolve against `/__deck/` and 404.
@@ -1011,6 +1131,7 @@ Worth knowing before you plan a talk around them:
 - No `file://` mode. The deck always runs through the local HTTP server.
 - The editor does not upload or embed images. It stores Markdown, and images load by path from the folder you launched in.
 - The library lives in one browser and one origin. It does not sync between browsers or machines, so download anything you cannot afford to lose.
+- An HTML deck's slide panel handles slides and their text, not layout. Moving or resizing boxes, formatting beyond `Cmd B` / `Cmd I` while editing text on a slide, animations, and PowerPoint's sections are not available there. Make those changes in the source or ask Claude.
 
 ## Development
 

@@ -106,7 +106,7 @@ function killTree(child: ReturnType<typeof spawn>): void {
 }
 
 /**
- * Waits for the PDF itself rather than for the browser to exit.
+ * Waits for the PDF (or screenshot) itself rather than for the browser to exit.
  *
  * Chrome writes the file in about a second and then lingers, running update
  * checks and other background work, so waiting on process exit would stall for
@@ -116,7 +116,8 @@ function killTree(child: ReturnType<typeof spawn>): void {
 async function waitForPdf(
   out: string,
   hasExited: () => boolean,
-  spawnError: () => Error | null
+  spawnError: () => Error | null,
+  what = "a PDF"
 ): Promise<Buffer> {
   const deadline = Date.now() + RENDER_TIMEOUT_MS;
   let lastSize = -1;
@@ -142,7 +143,7 @@ async function waitForPdf(
       } catch {
         // Nothing there.
       }
-      throw new PdfError("the browser exited without producing a PDF");
+      throw new PdfError(`the browser exited without producing ${what}`);
     }
 
     await sleep(POLL_MS);
@@ -210,14 +211,69 @@ export async function renderPdf(url: string, browser: string): Promise<Buffer> {
   }
 }
 
+/**
+ * A screenshot of a served page at a fixed window size: what a slide looks
+ * like, for the chat's /look. Same browser and settling as the PDF export.
+ */
+export async function renderPng(url: string, browser: string, width: number, height: number): Promise<Buffer> {
+  const dir = await mkdtemp(join(tmpdir(), "deckrun-look-"));
+  const out = join(dir, "slide.png");
+
+  const args = [
+    "--headless",
+    "--disable-gpu",
+    "--hide-scrollbars",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-extensions",
+    "--disable-sync",
+    "--disable-default-apps",
+    "--disable-component-update",
+    "--no-service-autorun",
+    "--mute-audio",
+    `--user-data-dir=${join(dir, "profile")}`,
+    `--window-size=${width},${height}`,
+    "--force-device-scale-factor=1",
+    // Webfonts, images, and the deck's own layout script settle first.
+    "--virtual-time-budget=5000",
+    "--run-all-compositor-stages-before-draw",
+    `--screenshot=${out}`,
+    url,
+  ];
+
+  let exited = false;
+  let failure: Error | null = null;
+  const child = spawn(browser, args, {
+    stdio: "ignore",
+    detached: process.platform !== "win32",
+  });
+  child.on("exit", () => { exited = true; });
+  child.on("error", (err) => {
+    failure = new PdfError(`could not run ${browser}: ${err.message}`);
+    exited = true;
+  });
+
+  try {
+    return await waitForPdf(out, () => exited, () => failure, "a picture");
+  } finally {
+    killTree(child);
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 /** One render at a time, so a stuck or repeated request cannot spawn a fleet. */
 let queue: Promise<unknown> = Promise.resolve();
 
-export function renderPdfSerial(url: string, browser: string): Promise<Buffer> {
-  const run = queue.then(
-    () => renderPdf(url, browser),
-    () => renderPdf(url, browser)
-  );
+function serial<T>(job: () => Promise<T>): Promise<T> {
+  const run = queue.then(job, job);
   queue = run.catch(() => {});
   return run;
+}
+
+export function renderPdfSerial(url: string, browser: string): Promise<Buffer> {
+  return serial(() => renderPdf(url, browser));
+}
+
+export function renderPngSerial(url: string, browser: string, width: number, height: number): Promise<Buffer> {
+  return serial(() => renderPng(url, browser, width, height));
 }

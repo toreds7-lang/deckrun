@@ -20,6 +20,7 @@ import { generatePreviewHtml } from "../dist/preview.js";
 import { generateEditorHtml } from "../dist/editor.js";
 import { findFont, resolveThemeName } from "../dist/themes.js";
 import { HIGHLIGHT_RUNTIME, HIGHLIGHT_WARNING } from "../dist/highlights.js";
+import { chatArgs, chatBlockedReason, chatEvents, chatPermissions } from "../dist/chat.js";
 import vm from "node:vm";
 
 test("Parser handles slides, notes, images, math, and reveals", () => {
@@ -390,4 +391,115 @@ test("The type size option is gone from every surface", async () => {
   // The one scale the deck now renders at still reaches the templates.
   assert.ok(deck.includes("--slide-pad-y: 4.4rem"));
   assert.ok(deck.includes("--slide-pad-x: 6rem"));
+});
+
+test("Chat confines Claude to the opened file", () => {
+  const name = "my deck (v2) 망한.html";
+  const args = chatArgs(name, "html", null);
+  const after = (flag) => args[args.indexOf(flag) + 1];
+
+  assert.ok(args.includes("--restricted"), "no code-running tools, no personal settings");
+  assert.ok(args.includes("--strict-mcp-config"), "no MCP servers");
+  assert.equal(after("--permission-mode"), "dontAsk");
+  const tools = args.slice(args.indexOf("--tools") + 1, args.indexOf("--settings"));
+  assert.deepEqual(tools, ["Read", "Edit", "Write", "Glob", "Grep"]);
+  assert.ok(!args.includes("--allowedTools"), "the CLI flag splits names with spaces and parentheses");
+
+  // The one edit rule names the file exactly, spaces, parentheses and all.
+  assert.deepEqual(JSON.parse(after("--settings")).permissions.allow, ["Read", "Glob", "Grep", `Edit(./${name})`]);
+  assert.equal(after("--settings"), chatPermissions(name));
+  assert.ok(after("--append-system-prompt").includes(name));
+  assert.ok(!after("--append-system-prompt").includes("\n"), "one line, so it survives cmd.exe");
+
+  assert.ok(!args.includes("--resume"), "a first turn starts a new conversation");
+  const later = chatArgs(name, "markdown", "abc-123", "sonnet");
+  assert.equal(later[later.indexOf("--resume") + 1], "abc-123");
+  assert.equal(later[later.indexOf("--model") + 1], "sonnet");
+
+  assert.equal(chatBlockedReason(name), null);
+  assert.match(chatBlockedReason("deck*.html"), /glob/);
+  assert.match(chatBlockedReason("deck[1].md"), /glob/);
+});
+
+test("Chat stream events map to what the panel shows", () => {
+  const cwd = process.platform === "win32" ? "C:\talks" : "/talks";
+  const inCwd = (f) => (process.platform === "win32" ? "C:\talks\\" : "/talks/") + f;
+
+  assert.deepEqual(chatEvents({ type: "system", subtype: "init", session_id: "s1" }, cwd), [{ type: "session", id: "s1" }]);
+  assert.deepEqual(
+    chatEvents({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "Hi" } } }, cwd),
+    [{ type: "text", text: "Hi" }]
+  );
+  assert.deepEqual(
+    chatEvents({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "thinking_delta", thinking: "…" } } }, cwd),
+    []
+  );
+  assert.deepEqual(
+    chatEvents({ type: "assistant", message: { content: [
+      { type: "text", text: "Editing" },
+      { type: "tool_use", name: "Edit", input: { file_path: inCwd("deck.html") } },
+      { type: "tool_use", name: "Grep", input: { pattern: "<title>" } },
+    ] } }, cwd),
+    [{ type: "tool", name: "Edit", target: "deck.html" }, { type: "tool", name: "Grep", target: "<title>" }]
+  );
+  assert.deepEqual(
+    chatEvents({ type: "result", subtype: "success", is_error: false, result: "Done.", duration_ms: 4200,
+      permission_denials: [{ tool_name: "Write", tool_input: { file_path: inCwd("other.html") } }] }, cwd),
+    [{ type: "done", ok: true, text: "Done.", ms: 4200, denied: ["Write other.html"] }]
+  );
+  assert.equal(chatEvents({ type: "result", subtype: "error_during_execution", is_error: true }, cwd)[0].ok, false);
+  // A subagent's chatter is not the reply.
+  assert.deepEqual(
+    chatEvents({ type: "stream_event", parent_tool_use_id: "t1", event: { type: "content_block_delta", delta: { type: "text_delta", text: "x" } } }, cwd),
+    []
+  );
+});
+
+test("Editor offers the chat panel only when the server says it can", () => {
+  const file = { name: "talk.html", kind: "html", writable: true, watched: true };
+  const withChat = generateEditorHtml("nord", {}, "classic", "slide", { ...file, chat: true });
+  const without = generateEditorHtml("nord", {}, "classic", "slide", file);
+  assert.ok(withChat.includes('"chat":true'));
+  assert.ok(!without.includes('"chat":true'));
+  // The button exists in both, hidden by CSS until data-chat="on" is set.
+  for (const html of [withChat, without]) {
+    assert.ok(html.includes('id="btn-chat"'));
+    assert.ok(html.includes('id="pane-chat"'));
+    assert.match(html, /#btn-chat \{ display: none; \}/);
+  }
+  assert.ok(withChat.includes("fetch('/__chat'"));
+});
+
+test("The HTML doc preview keeps decks that write history running", () => {
+  const editor = generateEditorHtml();
+  const start = editor.indexOf("var HISTORY_SHIM");
+  const end = editor.indexOf("function onHtmlInput");
+  assert.ok(start > 0 && end > start, "the shim and its injector ship in the editor");
+  const ctx = {};
+  vm.runInNewContext(editor.slice(start, end), ctx);
+
+  const shimmed = ctx.previewSrcdoc("<!doctype html><html><head><title>t</title></head><body><header>h</header></body></html>");
+  assert.ok(shimmed.startsWith("<!doctype html><html><head><script>"), "injected first thing in <head>");
+  assert.equal(shimmed.split("replaceState").length - 1, 1, "injected once, and not into <header>");
+  const bare = ctx.previewSrcdoc("<!DOCTYPE html><p>hi</p>");
+  assert.ok(bare.startsWith("<!DOCTYPE html><script>"), "after the doctype, so standards mode holds");
+
+  // The shim turns a throwing replaceState into a no-op.
+  const history = { replaceState() { throw new Error("SecurityError"); }, pushState() { throw new Error("SecurityError"); } };
+  const shimJs = ctx.HISTORY_SHIM.replace(/^<script>|<\/script>$/g, "");
+  vm.runInNewContext(shimJs, { history });
+  assert.doesNotThrow(() => history.replaceState(null, "", "#2"));
+  assert.doesNotThrow(() => history.pushState(null, "", "#3"));
+});
+
+test("Doc presenter focuses the doc and settles keys both could take", () => {
+  const html = generateDocHtml("/?deck=1", "Talk");
+  // Keys reach the doc's own script without a click first.
+  assert.match(html, /function focusDoc\(\)/);
+  assert.match(html, /el\.blur\(\);\s*focusDoc\(\);/, "toolbar clicks hand focus back to the doc");
+  // deckrun's overlays win ahead of the doc; otherwise the doc's handled keys are its own.
+  assert.ok(html.includes("addEventListener('keydown', onFrameKeyCapture, true)"));
+  assert.ok(html.includes("addEventListener('keydown', onFrameKey)"));
+  assert.match(html, /function onFrameKey\(e\) \{\s*if \(e\.defaultPrevented\) return;/);
+  assert.match(html, /if \(helpOn \|\| blackOn \|\| themesOpen\(\)\) return true;/);
 });
