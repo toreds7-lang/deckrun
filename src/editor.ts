@@ -4662,7 +4662,7 @@ ${CHAT_KIT_RUNTIME}
     var said = DRChat.latin(m[1]).toLowerCase();
     var known = DRChat.MODELS.filter(function (x) { return x.name === said; })[0];
     var name = known ? known.name : m[1];
-    if (!/^[A-Za-z0-9][A-Za-z0-9._[\\]-]{0,63}$/.test(name)) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:@\\/[\\]-]{0,199}$/.test(name)) {
       chatSys("'" + m[1] + "' is not a model name. Try " + DRChat.MODELS.map(function (x) { return x.name; }).join(', ') + '.');
       return;
     }

@@ -229,6 +229,6 @@ test("A picture goes to the CLI as one stream-json user message; text alone stay
 });
 
 test("Only model names reach the CLI", () => {
-  for (const ok of ["sonnet", "opus", "claude-opus-4-1", "claude-sonnet-4-5-20250929", "sonnet[1m]"]) assert.ok(chatModelOk(ok), ok);
-  for (const bad of ["", "-p", "a b", "x\"y", "sonnet;rm", "a".repeat(65)]) assert.ok(!chatModelOk(bad), bad);
+  for (const ok of ["sonnet", "opus", "claude-opus-4-1", "claude-sonnet-4-5-20250929", "sonnet[1m]", "us.anthropic.claude-sonnet-4-5-20250929-v1:0", "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc123", "claude-sonnet-4-5@20250929"]) assert.ok(chatModelOk(ok), ok);
+  for (const bad of ["", "-p", "a b", "x\"y", "sonnet;rm", "50%", "a".repeat(201)]) assert.ok(!chatModelOk(bad), bad);
 });

@@ -20,7 +20,7 @@ import {
 import { generateEditorHtml } from "./editor.js";
 import { generatePreviewHtml } from "./preview.js";
 import { findBrowser, renderPdfSerial, renderPngSerial, PdfError } from "./pdf.js";
-import { chatBlockedReason, chatBusy, chatModelOk, findClaude, resetChat, runChatTurn, stopChat } from "./chat.js";
+import { chatBlockedReason, chatBusy, chatCheck, chatModelOk, findClaude, resetChat, runChatTurn, stopChat } from "./chat.js";
 import { deckKind, isDeckName, listDecks, saveUpload, type UploadResult } from "./folder.js";
 import {
   DEFAULT_TEMPLATE,
@@ -999,6 +999,7 @@ program
   .option("--no-open", "Do not automatically open the browser")
   .option("--no-watch", "Do not watch the opened file for changes on disk")
   .option("--no-chat", "Hide the Claude chat panel that edits the opened file")
+  .option("--chat-check", "Run one test chat turn with Claude Code, print what happens, and exit")
   .option("--fullscreen", "Auto-enter fullscreen on first interaction")
   .option("--theme <name>", "Color theme, by id (see --list-themes)", DEFAULT_THEME)
   .option("--head-font <name>", "Override the theme's heading face (see --list-fonts)")
@@ -1017,6 +1018,7 @@ program
         open: boolean;
         watch: boolean;
         chat: boolean;
+        chatCheck?: boolean;
         fullscreen?: boolean;
         theme: string;
         headFont?: string;
@@ -1044,6 +1046,9 @@ program
       if (opts.listTransitions) {
         for (const line of transitionListing()) console.log(line);
         process.exit(0);
+      }
+      if (opts.chatCheck) {
+        process.exit(await chatCheck());
       }
 
       const named = findTheme(opts.theme);
@@ -1216,6 +1221,10 @@ program
             mode.chat = true;
             const blocked = chatBlockedReason(basename(absPath));
             if (blocked) console.log(`${c.dim}chat is off for this file: ${blocked}.${c.reset}`);
+          } else if (opts.chat) {
+            console.log(
+              `${c.yellow}chat is off: Claude Code was not found. Set DECKRUN_CLAUDE to the path 'where.exe claude' prints, or run deckrun --chat-check.${c.reset}`
+            );
           }
 
           if (opts.watch) watchFolder(baseDir);

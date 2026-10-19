@@ -1,5 +1,5 @@
-import { spawn, type ChildProcess } from "child_process";
-import { existsSync, rmSync, writeFileSync } from "fs";
+import { spawn, spawnSync, type ChildProcess } from "child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { basename, delimiter, dirname, join, relative } from "path";
 
@@ -39,18 +39,66 @@ let cachedClaude: string | null | undefined;
 export function findClaude(): string | null {
   if (cachedClaude !== undefined) return cachedClaude;
   const override = process.env.DECKRUN_CLAUDE;
-  if (override) return (cachedClaude = existsSync(override) ? override : null);
+  if (override) return (cachedClaude = existsSync(override) ? unwrapNpmShim(override) : null);
 
-  const names = process.platform === "win32" ? ["claude.exe", "claude.cmd"] : ["claude"];
+  const names = process.platform === "win32" ? ["claude.exe", "claude.cmd", "claude.bat"] : ["claude"];
   const dirs = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
   dirs.push(join(homedir(), ".local", "bin"));
+  // npm's default global folder, which a PATH set up only in a shell profile can leave out.
+  if (process.platform === "win32" && process.env.APPDATA) dirs.push(join(process.env.APPDATA, "npm"));
   for (const dir of dirs) {
     for (const name of names) {
       const candidate = join(dir, name);
-      if (existsSync(candidate)) return (cachedClaude = candidate);
+      if (existsSync(candidate)) return (cachedClaude = unwrapNpmShim(candidate));
     }
   }
   return (cachedClaude = null);
+}
+
+/**
+ * npm's claude.cmd only forwards to the package's own claude.exe. Running
+ * that directly skips cmd.exe: no quoting rules, no 8191-character limit,
+ * and stop ends Claude rather than the shell around it. Any other .cmd or
+ * .bat (a company wrapper that sets up Bedrock, say) is kept as it is.
+ */
+export function unwrapNpmShim(path: string): string {
+  if (!/\.cmd$/i.test(path)) return path;
+  let text = "";
+  try {
+    text = readFileSync(path, "utf-8");
+  } catch {
+    return path;
+  }
+  if (!/node_modules\\@anthropic-ai\\claude-code\\bin\\claude\.exe/i.test(text)) return path;
+  const exe = join(dirname(path), "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe");
+  return existsSync(exe) ? exe : path;
+}
+
+/**
+ * The parts of the person's own Claude Code settings that say how to reach
+ * the model: the env block (Bedrock, Vertex, a gateway, a proxy) and the
+ * auth helpers. --restricted ignores the user settings file, so without
+ * these a turn cannot sign in where the terminal can. Permissions, hooks,
+ * and MCP servers stay out, so the confinement holds.
+ */
+export function providerSettings(): { env: Record<string, string>; settings: Record<string, unknown> } {
+  const out = { env: {} as Record<string, string>, settings: {} as Record<string, unknown> };
+  const dir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+  let user: any;
+  try {
+    user = JSON.parse(readFileSync(join(dir, "settings.json"), "utf-8"));
+  } catch {
+    return out;
+  }
+  if (user?.env && typeof user.env === "object") {
+    for (const [key, value] of Object.entries(user.env)) {
+      if (typeof value === "string") out.env[key] = value;
+    }
+  }
+  for (const key of ["apiKeyHelper", "awsAuthRefresh", "awsCredentialExport", "model"]) {
+    if (user?.[key] !== undefined) out.settings[key] = user[key];
+  }
+  return out;
 }
 
 /**
@@ -95,13 +143,17 @@ function systemPrompt(fileName: string, kind: "markdown" | "html"): string {
  * loses track of parentheses, so a name like "talk (v2) final.html" would
  * become a rule that matches nothing.
  */
-export function chatPermissions(fileName: string): string {
-  return JSON.stringify({ permissions: { allow: ["Read", "Glob", "Grep", `Edit(./${fileName})`] } });
+export function chatPermissions(fileName: string, extra: Record<string, unknown> = {}): string {
+  return JSON.stringify({ ...extra, permissions: { allow: ["Read", "Glob", "Grep", `Edit(./${fileName})`] } });
 }
 
-/** A model name or alias the CLI is given: letters, digits, and the punctuation of model IDs. */
+/**
+ * A model name or alias the CLI is given: letters, digits, and the
+ * punctuation of model IDs, including Bedrock's (us.anthropic.…-v1:0, ARNs
+ * with / in them) and Vertex's (…@20250929).
+ */
 export function chatModelOk(model: string): boolean {
-  return /^[A-Za-z0-9][A-Za-z0-9._\-[\]]{0,63}$/.test(model);
+  return /^[A-Za-z0-9][A-Za-z0-9._\-[\]:@/]{0,199}$/.test(model);
 }
 
 /** The argv for one turn. Exported for tests. */
@@ -111,7 +163,9 @@ export function chatArgs(
   sessionId: string | null,
   model?: string,
   // The message arrives as a stream-json user message, which can carry an image.
-  structured = false
+  structured = false,
+  // Settings that go along with the permissions, from providerSettings().
+  extra: Record<string, unknown> = {}
 ): string[] {
   const args = [
     "-p",
@@ -122,7 +176,7 @@ export function chatArgs(
     "--restricted",
     "--strict-mcp-config",
     "--tools", "Read", "Edit", "Write", "Glob", "Grep",
-    "--settings", chatPermissions(fileName),
+    "--settings", chatPermissions(fileName, extra),
     "--permission-mode", "dontAsk",
     "--append-system-prompt", systemPrompt(fileName, kind),
   ];
@@ -239,7 +293,16 @@ export function resetChat(filePath: string): void {
 export function stopChat(): boolean {
   if (!running) return false;
   stopped = true;
-  running.kill();
+  const child = running;
+  if (process.platform === "win32" && child.pid) {
+    // Through a .cmd the child is cmd.exe; /T ends Claude under it as well.
+    // By full path, since PATH can lack System32 in a launcher's environment.
+    const taskkill = join(process.env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe");
+    spawn(taskkill, ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" })
+      .on("error", () => child.kill());
+  } else {
+    child.kill();
+  }
   return true;
 }
 
@@ -263,7 +326,9 @@ export function runChatTurn(opts: {
   const cwd = dirname(opts.filePath);
   const fileName = basename(opts.filePath);
   const model = opts.model || process.env.DECKRUN_CLAUDE_MODEL || undefined;
-  let args = chatArgs(fileName, opts.kind, sessions.get(opts.filePath) ?? null, model, !!opts.image);
+  const provider = providerSettings();
+  let args = chatArgs(fileName, opts.kind, sessions.get(opts.filePath) ?? null, model, !!opts.image, provider.settings);
+  const debug = !!process.env.DECKRUN_CHAT_DEBUG;
 
   // Node refuses to spawn a .cmd without a shell, and the shell joins argv
   // unquoted. Windows file names cannot hold a double quote, so wrapping
@@ -283,11 +348,21 @@ export function runChatTurn(opts: {
     opts.image
   );
 
+  if (debug) {
+    const shown = args.map((a) => (a.length > 120 ? a.slice(0, 117) + "..." : a));
+    console.error(`[chat] ${claude}${viaShell ? " (through cmd.exe)" : ""} in ${cwd}\n[chat]   ${shown.join(" ")}`);
+    console.error(`[chat] env from settings.json: ${Object.keys(provider.env).join(", ") || "none"}`);
+  }
+
   return new Promise((resolveTurn) => {
     let child: ChildProcess;
     try {
       child = spawn(viaShell ? `"${claude}"` : claude, args, {
         cwd,
+        // The env block from settings.json, which --restricted would drop.
+        // It goes here rather than into --settings so that tokens in it stay
+        // off the command line.
+        env: { ...process.env, ...provider.env },
         shell: viaShell,
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
@@ -328,6 +403,7 @@ export function runChatTurn(opts: {
     child.stderr!.setEncoding("utf-8");
     child.stderr!.on("data", (chunk: string) => {
       stderr = (stderr + chunk).slice(-2000);
+      if (debug) process.stderr.write(chunk.replace(/^/gm, "[chat:stderr] "));
     });
 
     child.on("error", (err) => {
@@ -335,6 +411,7 @@ export function runChatTurn(opts: {
     });
     child.on("close", (code) => {
       running = null;
+      if (debug) console.error(`[chat] exited with code ${code}`);
       if (!finished) {
         if (stopped) {
           opts.send({ type: "error", message: "Stopped. Edits made before the stop are kept." });
@@ -354,4 +431,76 @@ export function runChatTurn(opts: {
     child.stdin!.on("error", () => {});
     child.stdin!.end(prompt, "utf-8");
   });
+}
+
+/**
+ * `deckrun --chat-check`: finds Claude Code the way the server does, checks
+ * that it knows every flag a turn uses, then runs one real turn on a scratch
+ * file and prints what came back. Exits 0 when the turn succeeds.
+ */
+export async function chatCheck(log: (line: string) => void = console.log): Promise<number> {
+  const claude = findClaude();
+  if (!claude) {
+    log("claude: NOT FOUND. Run 'where.exe claude' where claude works and set DECKRUN_CLAUDE to that path.");
+    return 1;
+  }
+  const viaShell = /\.(cmd|bat)$/i.test(claude);
+  log(`claude: ${claude}${viaShell ? " (through cmd.exe)" : ""}`);
+
+  const help = spawnSync(viaShell ? `"${claude}"` : claude, ["--help"], {
+    shell: viaShell,
+    encoding: "utf-8",
+    windowsHide: true,
+    timeout: 60000,
+  });
+  const version = spawnSync(viaShell ? `"${claude}"` : claude, ["--version"], {
+    shell: viaShell,
+    encoding: "utf-8",
+    windowsHide: true,
+    timeout: 60000,
+  });
+  log(`version: ${(version.stdout || version.stderr || "?").trim()}`);
+  const flags = [...chatArgs("x.md", "markdown", "s", "m", true), "--resume", "--model"].filter((a) => a.startsWith("--"));
+  const missing = [...new Set(flags)].filter((f) => !(help.stdout ?? "").includes(f));
+  if (missing.length) {
+    log(`MISSING FLAGS: ${missing.join(" ")}. Update Claude Code (claude update, or npm i -g @anthropic-ai/claude-code).`);
+    return 1;
+  }
+
+  const provider = providerSettings();
+  log(`from ~/.claude/settings.json: env [${Object.keys(provider.env).join(", ")}] settings [${Object.keys(provider.settings).join(", ")}]`);
+  const env = { ...process.env, ...provider.env };
+  const routes = ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
+    "AWS_REGION", "AWS_PROFILE", "CLOUD_ML_REGION", "HTTPS_PROXY", "NODE_EXTRA_CA_CERTS"];
+  log(`set for the turn: ${routes.filter((k) => env[k] !== undefined).join(", ") || "none of the provider variables"}`);
+
+  const dir = mkdtempSync(join(tmpdir(), "deckrun-check-"));
+  const file = join(dir, "check.md");
+  writeFileSync(file, "# Check\n\nHello\n", "utf-8");
+  const started = Date.now();
+  let ok = false;
+  let reply = "";
+  const timer = setTimeout(() => {
+    log("No answer after 180 s: often a proxy or firewall, or a sign-in waiting in a browser. Stopping.");
+    stopChat();
+  }, 180000);
+  await runChatTurn({
+    filePath: file,
+    kind: "markdown",
+    message: "This is a connection test from deckrun. Reply with the single word OK and do not edit anything.",
+    send: (event) => {
+      if (event.type === "text") reply += event.text;
+      else if (event.type === "session") log(`session: ${event.id}`);
+      else if (event.type === "error") log(`ERROR: ${event.message}`);
+      else if (event.type === "done") {
+        ok = event.ok;
+        log(`result: ${event.ok ? "ok" : "failed"} in ${event.ms} ms: ${(event.text || reply).trim().slice(0, 300)}`);
+        if (event.denied.length) log(`denied: ${event.denied.join(", ")}`);
+      }
+    },
+  });
+  clearTimeout(timer);
+  rmSync(dir, { recursive: true, force: true });
+  log(ok ? `chat works (${Date.now() - started} ms).` : "chat FAILED. Run again with DECKRUN_CHAT_DEBUG=1 to see Claude Code's full output.");
+  return ok ? 0 : 1;
 }
