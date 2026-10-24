@@ -29,6 +29,8 @@ import {
 import { HIGHLIGHT_RUNTIME } from "./highlights.js";
 import { HTML_SLIDES_RUNTIME } from "./html-slides.js";
 import { SLIDE_PANEL_CSS, SLIDE_PANEL_MARKUP, SLIDE_PANEL_RUNTIME } from "./slide-panel.js";
+import { DESIGN_CSS, DESIGN_RUNTIME } from "./design.js";
+import { DESIGN_KIT_RUNTIME } from "./design-kit.js";
 import { INSPECT_BUTTON, INSPECT_CRUMBS, INSPECT_CSS, INSPECT_LAYER, INSPECT_RUNTIME } from "./inspect.js";
 import { CHAT_KIT_RUNTIME } from "./chat-kit.js";
 import { UPLOAD_ACCEPT } from "./folder.js";
@@ -1353,6 +1355,8 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 
 ${SLIDE_PANEL_CSS}
 
+${DESIGN_CSS}
+
 ${INSPECT_CSS}
 
 /* ── Narrow screens ───────────────────────────────────────────────────── */
@@ -1635,6 +1639,8 @@ ${INSPECT_LAYER}
 ${HIGHLIGHT_RUNTIME}
 ${HTML_SLIDES_RUNTIME}
 ${SLIDE_PANEL_RUNTIME}
+${DESIGN_KIT_RUNTIME}
+${DESIGN_RUNTIME}
 ${INSPECT_RUNTIME}
 ${CHAT_KIT_RUNTIME}
 </script>
@@ -1906,6 +1912,7 @@ ${CHAT_KIT_RUNTIME}
   var guide = $('guide'), guideBody = $('guide-body');
   var srcHtml = $('src-html'), frameHtml = $('frame-html');
   var slidePanel = null;
+  var designer = null;
   var inspect = null;
   // The Markdown preview's source map: { src, slides }, from the parse that drew it.
   var mdMap = null;
@@ -2821,6 +2828,87 @@ ${CHAT_KIT_RUNTIME}
   }
 
   /**
+   * An HTML deck as one .html file to hand around: hidden slides left out,
+   * and the pictures and video it loads from its folder carried inside.
+   */
+  function downloadWebPage() {
+    if (state.kind !== 'html' || !window.DRDesign) { exportHtml(); return; }
+    if (isEmpty()) { toast('Nothing to export yet.', 'warn'); return; }
+    var html = window.DRDesign.stripHidden(window.DRSlides.model(srcHtml.value));
+    var refs = window.DRDesign.assetRefs(html);
+    var wanted = {};
+    refs.forEach(function (r) { wanted[r.url] = true; });
+    var data = {}, missing = [];
+    elSave.className = 'warn';
+    elSave.textContent = 'packing the page';
+    Promise.all(Object.keys(wanted).map(function (u) {
+      return fetch(u)
+        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
+        .then(function (b) {
+          return new Promise(function (resolve) {
+            var fr = new FileReader();
+            fr.onload = function () { data[u] = String(fr.result); resolve(); };
+            fr.onerror = function () { missing.push(u); resolve(); };
+            fr.readAsDataURL(b);
+          });
+        })
+        .catch(function () { missing.push(u); });
+    }))
+      .then(function () {
+        var out = '', pos = 0;
+        refs.forEach(function (r) {
+          if (!data[r.url]) return;
+          out += html.slice(pos, r.start) + data[r.url];
+          pos = r.end;
+        });
+        out += html.slice(pos);
+        var name = slugify($('docname').value).replace(/\\.(md|markdown|html?)$/, '') + '.html';
+        saveBlob(name, new Blob([out], { type: 'text/html;charset=utf-8' }));
+        toast('Downloaded ' + name + (missing.length
+          ? '. Not found, so still linked: ' + missing.slice(0, 4).join(', ') + (missing.length > 4 ? '…' : '') + '.'
+          : (refs.length ? ', with its pictures inside.' : '.')), missing.length ? 'warn' : null);
+      })
+      .then(function () {
+        elSave.className = '';
+        elSave.textContent = '';
+        scheduleSave();
+      });
+  }
+
+  /** Slide k as a PNG at twice its size, drawn by the same headless browser as the PDF. */
+  function downloadSlidePng(k) {
+    if (state.kind !== 'html' || !window.DRSlides) return;
+    var m = window.DRSlides.model(srcHtml.value);
+    if (!m.slides[k]) return;
+    var size = designer ? designer.size() : { w: 1280, h: 720 };
+    elSave.className = 'warn';
+    elSave.textContent = 'drawing slide ' + (k + 1);
+    fetch('/__png', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ html: window.DRSlides.isolate(m, k), width: size.w, height: size.h, scale: 2 })
+    })
+      .then(function (r) {
+        if (r.ok) return r.blob();
+        return r.json().then(
+          function (info) { throw new Error((info && info.detail) || 'server said ' + r.status); },
+          function () { throw new Error('server said ' + r.status); }
+        );
+      })
+      .then(function (blob) {
+        var name = slugify($('docname').value).replace(/\\.(md|markdown|html?)$/, '') + '-slide-' + (k + 1) + '.png';
+        saveBlob(name, blob);
+        toast('Downloaded ' + name + '.');
+      })
+      .catch(function (err) { toast('Could not draw the slide: ' + err.message, 'err'); })
+      .then(function () {
+        elSave.className = '';
+        elSave.textContent = '';
+        scheduleSave();
+      });
+  }
+
+  /**
    * Exports a real PDF file. The server drives a headless browser, so nobody
    * has to find the landscape and background-graphics settings in a dialog.
    * Falls back to the dialog only when the machine has no browser to drive.
@@ -2958,6 +3046,8 @@ ${CHAT_KIT_RUNTIME}
     if (isEmpty()) { toast('Nothing to present yet.', 'warn'); return; }
     // Bound straight to a click as well, where the argument is the event.
     from = from && typeof from.start === 'number' ? from : null;
+    // A deck presents as a tagged copy from its first slide, so its slide transitions can play.
+    if (!from && state.kind === 'html' && slidePanel && slidePanel.count()) { presentFrom(0); return; }
     expectingDeck = true;
     var tab = window.open('about:blank', '_blank');
     (state.kind === 'html' ? buildHtmlDoc(false, from) : buildDeck(false))
@@ -3368,6 +3458,7 @@ ${CHAT_KIT_RUNTIME}
     if (state.kind === 'html') {
       srcHtml.value = readDeck(id);
       if (slidePanel) slidePanel.reset();
+      if (designer) designer.reset();
       reloadPreview();
       renderHtmlCounts();
       if (announce) toast('Opened ' + meta.name);
@@ -3759,6 +3850,7 @@ ${CHAT_KIT_RUNTIME}
     scheduleSave();
     renderHtmlCounts();
     if (slidePanel) slidePanel.edited();
+    if (designer) designer.sourceChanged({});
     schedulePreview();
   }
 
@@ -3788,9 +3880,15 @@ ${CHAT_KIT_RUNTIME}
       if (!opts.nosave) scheduleSave();
       renderHtmlCounts();
       if (!opts.quiet) schedulePreview();
+      if (designer) designer.sourceChanged(opts);
     },
     reload: reloadPreview,
-    ready: function (win) { if (inspect) inspect.ready(win); hookSlash(win); },
+    ready: function (win) {
+      if (inspect) inspect.ready(win);
+      hookSlash(win);
+      if (designer) designer.ready(win);
+    },
+    slideShown: function (k) { if (designer) designer.slideShown(k); },
     layout: layout,
     present: presentFrom,
     chat: FILE && FILE.chat ? chatAsk : null,
@@ -3798,6 +3896,96 @@ ${CHAT_KIT_RUNTIME}
     get: lsGet,
     set: lsSet
   }) : null;
+
+  // ── Design view ──────────────────────────────────────────────────────
+  // The slide on a zoomable canvas: insert text, pictures, tables, shapes,
+  // lines, and connectors; select, move, resize; and a properties panel for
+  // whatever is selected. Each change is a rewrite of one element's markup.
+  var KD = { code: 'deckrun.design.code.v1' };
+  var codeOn = lsGet(KD.code, '1') !== '0';
+
+  function setCode(on) {
+    codeOn = on;
+    lsSet(KD.code, on ? '1' : '0');
+    document.documentElement.classList.toggle('code-off', !on);
+    $('dh-code').setAttribute('aria-pressed', on ? 'true' : 'false');
+    layout();
+    if (slidePanel) slidePanel.layout();
+    if (designer) designer.codeMode(on);
+  }
+
+  /** Scrolls the HTML source so pos sits a third of the way down, without moving focus. */
+  function scrollSourceTo(pos) {
+    var line = srcHtml.value.slice(0, pos).split('\\n').length - 1;
+    var lh = parseFloat(getComputedStyle(srcHtml).lineHeight) || 22;
+    var top = line * lh;
+    if (top < srcHtml.scrollTop + lh || top > srcHtml.scrollTop + srcHtml.clientHeight - 2 * lh) {
+      srcHtml.scrollTop = Math.max(0, top - srcHtml.clientHeight * 0.3);
+    }
+  }
+
+  /** Where a picture or video for the deck lives: copied into its folder, or kept inside it. */
+  function mediaUrl(file) {
+    if (FOLDER) {
+      return uploadOne(file, false).then(function (r) {
+        if (!r || !r.name) throw new Error('the copy did not land');
+        if (r.status === 'renamed') toast(file.name + ' was already there, so this one is ' + r.name + '.');
+        return r.name.replace(/[ #?%"'<>]/g, function (c) { return encodeURIComponent(c); });
+      });
+    }
+    if (file.size > 4 * 1024 * 1024) {
+      toast(file.name + ' is large, and goes inside the file itself. Open the deck from a folder to keep pictures beside it instead.', 'warn');
+    }
+    return new Promise(function (resolve, reject) {
+      var fr = new FileReader();
+      fr.onload = function () { resolve(String(fr.result)); };
+      fr.onerror = function () { reject(new Error('could not read it')); };
+      fr.readAsDataURL(file);
+    });
+  }
+
+  designer = window.deckrunDesigner && window.DRDesign && slidePanel ? window.deckrunDesigner(window.DRSlides, window.DRDesign, {
+    panel: slidePanel,
+    src: srcHtml,
+    frame: frameHtml,
+    cmd: CMD,
+    isHtml: function () { return state.kind === 'html'; },
+    inspecting: function () { return $('btn-inspect').getAttribute('aria-pressed') === 'true'; },
+    // A dialog or menu of the editor's own is up: the design view's keys stand down.
+    modal: function () {
+      return themesOpen() || menuIsOpen() || palette.classList.contains('is-on') || guide.classList.contains('is-on') ||
+        $('library').classList.contains('is-on') || $('screen-start').classList.contains('is-on');
+    },
+    pick: function (pos) {
+      try { srcHtml.setSelectionRange(pos, pos); } catch (e) {}
+      if (codeOn) scrollSourceTo(pos);
+      // A selection on the canvas is the person pointing at an element: the chat's "this".
+      chatMark('src');
+      renderHtmlCounts();
+      if (inspect) inspect.caretMoved();
+    },
+    reveal: function (pos) {
+      if (!codeOn) setCode(true);
+      srcHtml.focus();
+      try { srcHtml.setSelectionRange(pos, pos); } catch (e) {}
+      scrollSourceTo(pos);
+      onHtmlCaret();
+    },
+    upload: mediaUrl,
+    download: function (kind, k) {
+      if (kind === 'pdf') exportPdf();
+      else if (kind === 'web') downloadWebPage();
+      else if (kind === 'png') downloadSlidePng(k);
+    },
+    present: presentFrom,
+    reload: reloadPreview,
+    toast: toast,
+    get: lsGet,
+    set: lsSet
+  }) : null;
+
+  $('dh-code').addEventListener('click', function () { setCode(!codeOn); });
+  setCode(codeOn);
 
   // ── Inspect ──────────────────────────────────────────────────────────
   // The source and the preview point at each other, as in Chrome's
@@ -4140,6 +4328,7 @@ ${CHAT_KIT_RUNTIME}
       else if (key === 'g' && md) { e.preventDefault(); runAction('grid'); }
       else if (key === 'l' && e.shiftKey) { e.preventDefault(); runAction('theme'); }
       else if (key === 'j' && CHAT) { e.preventDefault(); setChatOpen(!chatOpen()); }
+      else if (e.code === 'Backslash' && state.kind === 'html') { e.preventDefault(); setCode(!codeOn); }
       return;
     }
 

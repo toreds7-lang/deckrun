@@ -36,6 +36,7 @@ import {
 import { FRAGMENT_CSS, FRAGMENT_RUNTIME } from "./fragments.js";
 import { HIGHLIGHT_RUNTIME } from "./highlights.js";
 import { HTML_SLIDES_RUNTIME } from "./html-slides.js";
+import { DESIGN_KIT_RUNTIME, TRANSITION_PLAYER_RUNTIME } from "./design-kit.js";
 
 export {
   DECOR_CSS,
@@ -3588,10 +3589,15 @@ ${startSlide === null ? "" : docStartScript(startSlide)}
 </html>`;
 }
 
-/** Steps a tagged deck to its opening slide once it loads, for a deck its hash did not move. */
+/**
+ * Steps a tagged deck to its opening slide once it loads, for a deck its
+ * hash did not move, and plays each slide's `data-transition` as it comes in.
+ */
 function docStartScript(start: number): string {
   return `<script>
 ${HTML_SLIDES_RUNTIME}
+${DESIGN_KIT_RUNTIME}
+${TRANSITION_PLAYER_RUNTIME}
 (function () {
   var frame = document.getElementById('doc-frame');
   var done = false;
@@ -3605,6 +3611,8 @@ ${HTML_SLIDES_RUNTIME}
     if (done || !ready()) return;
     done = true;
     DRSlides.goto(frame.contentWindow, ${Math.max(0, Math.floor(start))});
+    // Only once the deck stands on its opening slide, so that step never plays as a transition.
+    try { DRTransitions.attach(frame.contentWindow); } catch (e) {}
   }
   frame.addEventListener('load', go);
   go();

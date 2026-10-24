@@ -215,7 +215,7 @@ export async function renderPdf(url: string, browser: string): Promise<Buffer> {
  * A screenshot of a served page at a fixed window size: what a slide looks
  * like, for the chat's /look. Same browser and settling as the PDF export.
  */
-export async function renderPng(url: string, browser: string, width: number, height: number): Promise<Buffer> {
+export async function renderPng(url: string, browser: string, width: number, height: number, scale = 1): Promise<Buffer> {
   const dir = await mkdtemp(join(tmpdir(), "deckrun-look-"));
   const out = join(dir, "slide.png");
 
@@ -233,7 +233,7 @@ export async function renderPng(url: string, browser: string, width: number, hei
     "--mute-audio",
     `--user-data-dir=${join(dir, "profile")}`,
     `--window-size=${width},${height}`,
-    "--force-device-scale-factor=1",
+    `--force-device-scale-factor=${scale}`,
     // Webfonts, images, and the deck's own layout script settle first.
     "--virtual-time-budget=5000",
     "--run-all-compositor-stages-before-draw",
@@ -274,6 +274,6 @@ export function renderPdfSerial(url: string, browser: string): Promise<Buffer> {
   return serial(() => renderPdf(url, browser));
 }
 
-export function renderPngSerial(url: string, browser: string, width: number, height: number): Promise<Buffer> {
-  return serial(() => renderPng(url, browser, width, height));
+export function renderPngSerial(url: string, browser: string, width: number, height: number, scale = 1): Promise<Buffer> {
+  return serial(() => renderPng(url, browser, width, height, scale));
 }

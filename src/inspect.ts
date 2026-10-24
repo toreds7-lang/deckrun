@@ -427,7 +427,7 @@ export function inspector(host: any): any {
     if (!r.width || !r.height || !fr.clientWidth || !fr.clientHeight) return null;
     let L = Math.max(0, r.left), T = Math.max(0, r.top);
     let R = Math.min(win.innerWidth, r.right), B = Math.min(win.innerHeight, r.bottom);
-    [fr.parentElement, fr.closest("#pane-prev")].forEach(function (p: any) {
+    [fr.parentElement, fr.closest("#dz-canvas"), fr.closest("#pane-prev")].forEach(function (p: any) {
       if (!p) return;
       const q = p.getBoundingClientRect();
       L = Math.max(L, q.left); T = Math.max(T, q.top); R = Math.min(R, q.right); B = Math.min(B, q.bottom);

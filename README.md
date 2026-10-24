@@ -287,6 +287,43 @@ A hidden slide is wrapped in `<template data-deckrun-hidden>`. A browser never r
 
 Thumbnails and the preview run the deck's own script, so deckrun finds slides without knowing how the deck works. To show a slide it first sets `#n`, the hash most hand-written decks read. If the deck does not respond to that, deckrun presses its arrow keys, and as a last resort scrolls the slide into view.
 
+### The design view
+
+In an HTML deck the preview is a canvas: the slide at its real size, zoomed to fit, with a bar to insert things at its top left, a bar to download, present, and zoom at its top right, and a properties panel beside it. `code` in the slide bar (`Cmd \`) hides the source pane, so the rail, the canvas, and the panel get the whole window; it comes back the same way, and every change shows up in the source either way. The panel is off at first while the source is showing and on in the design view, and each remembers your choice.
+
+**Selecting.** Click anything on the slide to select it, and drag to move it. The handles resize it (`Shift` keeps its proportions, `Alt` resizes about its center, and a picture keeps its proportions from a corner anyway). Moving boxes snap to the slide's edges and middle and to the boxes around them, with pink guides; `Cmd` while dragging turns that off. A click selects the block it lands in: a word in a sentence selects the sentence, a cell selects its table. `Cmd` click selects the innermost element, `Esc` or `Shift Enter` selects the parent, and `Enter` types in a text box or else selects its first child. Double-click text to type in it. Double-click a picture to replace it.
+
+Boxes placed here are positioned freely (`position: absolute` in the slide). An element the deck lays out itself moves by a CSS `translate`, so the elements around it stay where they are, and the dashed outline says which kind is selected.
+
+**Inserting.** Click a tool and then click the slide, or drag out the box you want, or drag the tool onto the slide.
+
+| Tool | Key | What goes in |
+| --- | --- | --- |
+| Text box | `T` | A paragraph in the deck's own body text, ready to type in |
+| Image or video | | Chosen from a file picker, dropped on the slide, or pasted. In a folder it is copied in beside the deck, as uploads are; otherwise it goes inside the file as a `data:` URL |
+| Table | | Three by three with a header row |
+| Rectangle, rounded rectangle, ellipse | `R`, `Shift R`, `O` | A box that can hold a line of text |
+| Diamond, arrows | `D` | An SVG outline stretched to the box; its fill and stroke act as background and border |
+| Line, connector | `L`, `Shift L` | Drag from one end to the other. A connector's ends snap to the middle of a box's sides and stay attached: move or resize the box and the connector follows. Drag an end away to let go |
+
+Something new goes on top of the slide, even of parts of it that set their own `z-index`. `Cmd ]` and `Cmd [` (or the right-click menu) bring a box to the front or send it to the back. `Delete`, `Cmd D`, `Cmd C`, `Cmd X`, and `Cmd V` delete, duplicate, copy, cut, and paste the selection, and the arrow keys nudge it by 1px (`Shift` for 10px). A copy is the element's HTML, so it pastes into another slide or another deck.
+
+**The properties panel** shows what fits the selection:
+
+| Selection | Sections |
+| --- | --- |
+| Nothing (the slide) | Transition, background color |
+| Any element | Position (or offset) and rotation; size with Auto, Hug, Fixed, or Fill, and min and max; padding, per side if you like; appearance (background, opacity, corner radius, border); effects (drop and inner shadows, layer and background blur); advanced (flex grow, shrink, and basis, aspect ratio, decoration line style and color, numerals, text stroke, filter, backdrop, transform, blend mode, stacking, overflow) |
+| Text | Text style (the deck's own title, heading, body, and caption looks, found from the deck), font, weight, size, line height and letter spacing, color, bold, italic, underline, strikethrough, bullets or numbers, alignment, case, and resizing: auto height, fixed size, or shrink text to fit |
+| Table | Columns, rows, each column's width, header row, and the role of the cell you last clicked |
+| Line or connector | Color, width, solid, dashed, or dotted, and an arrow at either end |
+
+Colors take any CSS color or a deck variable such as `var(--red)`, and the picker lists the deck's own color variables first. A number field steps with the arrow keys (`Shift` for 10), and dragging its icon sideways scrubs it.
+
+Every change is one element's inline `style` or attributes, so the deck's stylesheet and script stay exactly as written, and it all goes into the one undo history. "Shrink text to fit" is worked out as you edit and written as a plain `font-size`, so the file needs nothing at runtime. A slide transition is stored as `data-transition` on the slide and plays when you present from deckrun; opened on its own, the deck changes slides its own way.
+
+**Download** in the canvas bar saves the presentation as a PDF, as one web page with its pictures and video inside (hidden slides left out), or the current slide as a PNG at twice its size. **Zoom** is `Cmd +`, `Cmd -`, and `Cmd 0` to fit, or `Cmd` and the mouse wheel over the canvas. While the design view has the pointer, the deck itself never sees a click; hold `Alt` to click something in the deck, such as its own video poster.
+
 ### Inspect: from the source to the slide and back
 
 The source and the preview point at each other, the way Chrome's DevTools links its Elements panel to the page. This works for Markdown decks and HTML docs alike.
@@ -425,6 +462,9 @@ An HTML doc's PDF is not paginated to 16:9 slides — it prints the doc's own `@
 | `Cmd J`             | Claude chat (a file opened on the CLI) |
 | `Cmd M`             | New slide (HTML deck)      |
 | `Cmd Shift Enter`   | Present from the selected slide (HTML deck) |
+| `Cmd \`             | Show or hide the source pane: the [design view](#the-design-view) (HTML deck) |
+| `Cmd +`, `Cmd -`, `Cmd 0` | Zoom the design canvas in, out, and to fit (HTML deck) |
+| `T`, `R`, `Shift R`, `O`, `D`, `L`, `Shift L` | Text box, rectangle, rounded rectangle, ellipse, diamond, line, and connector tools on the design canvas |
 | `Cmd Shift X`       | [Inspect](#inspect-from-the-source-to-the-slide-and-back) mode: pick an element on the slide to find its source |
 | `Cmd S`             | Export Markdown            |
 | `Cmd Shift S`       | Export PDF                 |
@@ -458,6 +498,7 @@ The editor adds a few endpoints under `/__`, all local:
 | `/__fetch-doc`     | POST a public URL, get back that page's HTML, fetched server-side     |
 | `/__chat`          | POST a chat message, get back the Claude turn as NDJSON; same-origin only. `/__chat/stop` and `/__chat/reset` end the turn or the conversation |
 | `/__look`          | POST one slide's HTML, get back the id of its 1280×720 picture; GET `?id=` serves the PNG. Same-origin only for POST |
+| `/__png`           | POST one slide's HTML with its size, get back the PNG at twice that size: the design view's "this slide as an image". Same-origin only |
 | `/?deck=<n>`       | A built deck or stashed doc, kept in memory. The last eight are retained |
 
 A built deck is served from `/` rather than a subpath on purpose. Served from `/__deck/1`, a slide's `![](diagram.png)` would resolve against `/__deck/` and 404.

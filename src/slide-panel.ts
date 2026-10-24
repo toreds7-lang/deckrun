@@ -16,6 +16,8 @@
  * none of them may spell out a comment opener or a script tag.
  */
 
+import { DESIGN_CANVAS, DESIGN_PANEL, DESIGN_POPS } from "./design.js";
+
 export const SLIDE_PANEL_CSS = `
 /* ── HTML slide panel ─────────────────────────────────────────────────── */
 #doc-view { display: none; flex: 1 1 auto; min-height: 0; flex-direction: column; }
@@ -271,6 +273,7 @@ export const SLIDE_PANEL_CSS = `
 
 export const SLIDE_PANEL_MARKUP = `<div id="doc-view">
         <div id="doc-head">
+          <button class="dh-btn" id="dh-code" aria-pressed="true" title="Show or hide the HTML source: hide it for a design view of canvas and properties (Ctrl \\)">code</button>
           <button class="dh-btn" id="dh-rail" aria-pressed="true" title="Show or hide the slide panel">slides</button>
           <button class="step" id="dh-prev" title="Previous slide">&#8592;</button>
           <span id="dh-count">slide 1 / 1</span>
@@ -279,7 +282,7 @@ export const SLIDE_PANEL_MARKUP = `<div id="doc-view">
           <span class="dh-split">
             <button class="dh-btn" id="dh-new" title="New slide after this one (Ctrl M)">+ slide</button><button class="dh-btn dh-btn--chev" id="dh-more" aria-haspopup="true" aria-expanded="false" title="A blank slide, one of this deck's layouts, or one written by Claude">&#9662;</button>
           </span>
-          <span id="dh-hint">double-click text on the slide to edit it</span>
+          <span id="dh-hint">click to select &middot; double-click text to edit it</span>
           <div class="seg">
             <button id="dh-normal" class="is-on" title="Slide panel beside the preview">normal</button>
             <button id="dh-sorter" title="Every slide at once, for moving many">sorter</button>
@@ -293,16 +296,18 @@ export const SLIDE_PANEL_MARKUP = `<div id="doc-view">
             <div id="rail-drop" aria-hidden="true"></div>
           </div>
           <div id="doc-main">
-            <iframe id="frame-html" title="HTML doc preview"></iframe>
+            ${DESIGN_CANVAS}
             <div id="doc-notes">
               <label id="doc-notes-label" for="doc-notes-input">speaker notes</label>
               <textarea id="doc-notes-input" spellcheck="false" placeholder="Click to add speaker notes"></textarea>
             </div>
           </div>
+          ${DESIGN_PANEL}
         </div>
         <div id="dr-menu" class="dr-pop" role="menu" tabindex="-1"></div>
         <div id="dr-newmenu" class="dr-pop" tabindex="-1"></div>
         <div id="dr-ghost" aria-hidden="true"></div>
+        ${DESIGN_POPS}
       </div>`;
 
 /**
@@ -631,6 +636,12 @@ export function slidePanel(S: any, host: any): any {
     scrollRailTo(k);
     reveal(k, false);
     drive();
+    shown();
+  }
+
+  /** Tells the design view which slide is up now. */
+  function shown(): void {
+    if (host.slideShown) host.slideShown(sel.cur);
   }
 
   function step(d: number, extend: boolean): void {
@@ -971,6 +982,7 @@ export function slidePanel(S: any, host: any): any {
     loadNotes(false);
     scrollRailTo(k);
     reveal(k, false);
+    shown();
   }
 
   // ── Editing text on the slide ──────────────────────────────────────────
@@ -998,7 +1010,8 @@ export function slidePanel(S: any, host: any): any {
     startEdit(t, e);
   }
 
-  function startEdit(el: any, e: any): void {
+  /** `all` selects the whole text, so typing replaces it (a box just placed says "Text"). */
+  function startEdit(el: any, e: any, all?: boolean): void {
     finishEdit(false);
     const win = el.ownerDocument.defaultView;
     editing = { el, win, j: parseInt(el.getAttribute("data-dr-t"), 10), last: clean(el) };
@@ -1009,9 +1022,15 @@ export function slidePanel(S: any, host: any): any {
     el.setAttribute("spellcheck", "false");
     el.focus({ preventScroll: true });
     try {
-      let r = keep;
+      let r = all ? null : keep;
       if (!r && e && el.ownerDocument.caretRangeFromPoint) r = el.ownerDocument.caretRangeFromPoint(e.clientX, e.clientY);
-      if (r) { s.removeAllRanges(); s.addRange(r); }
+      if (!r) {
+        r = el.ownerDocument.createRange();
+        r.selectNodeContents(el);
+        if (!all) r.collapse(false);
+      }
+      s.removeAllRanges();
+      s.addRange(r);
     } catch (err) {}
     el.addEventListener("input", onEditInput);
     el.addEventListener("blur", onEditBlur);
@@ -1056,7 +1075,7 @@ export function slidePanel(S: any, host: any): any {
       el.removeAttribute("spellcheck");
     } catch (e) {}
     root.classList.remove("is-editing");
-    $("dh-hint").textContent = "double-click text on the slide to edit it";
+    $("dh-hint").textContent = "click to select · double-click text to edit it";
     if (previewStale && !dropping) host.reload();
   }
 
@@ -1572,10 +1591,27 @@ export function slidePanel(S: any, host: any): any {
       if (previewPending || !tagged || tagged.src !== src.value) return null;
       if (!tagged.view) {
         const m = tagged.model;
-        tagged.view = { root: m.root, nodes: tagged.nodes, slideAt: function (pos: number): number { return S.slideAt(m, pos); } };
+        tagged.view = { root: m.root, nodes: tagged.nodes, model: m, slideAt: function (pos: number): number { return S.slideAt(m, pos); } };
       }
       return tagged.view;
     },
+    /** Rewrites the source as one undoable step: { kind, fold, quiet } as for the panel's own changes. */
+    apply: function (next: string, opts: any): boolean { return setSource(next, opts || {}); },
+    /** The slide model of the source as it is now. */
+    model: function (): any { return sync(); },
+    /** Starts typing in a text box on the slide; `all` selects its text first. */
+    editText: function (el: any, all?: boolean): boolean {
+      const t = el && el.closest ? el.closest("[data-dr-t]") || (el.querySelector ? el.querySelector("[data-dr-t]") : null) : null;
+      if (!t) return false;
+      if (busyNow) { host.toast("Claude is editing this file. Wait for it to finish, or press stop.", "warn"); return false; }
+      if (boxesSrc !== src.value) return false;
+      startEdit(t, null, !!all);
+      return true;
+    },
+    /** The text box being typed in on the slide, if any. */
+    editingEl: function (): any { return editing ? editing.el : null; },
+    undo,
+    redo,
     layout: layoutThumbs,
     step: function (d: number): void { if (count()) step(d, false); },
     /** The person typed in the source. */
@@ -1596,6 +1632,7 @@ export function slidePanel(S: any, host: any): any {
       loadNotes(false);
       scrollRailTo(k);
       drive();
+      shown();
     },
     /** New content from disk — Claude's edit, or another editor's — kept undoable. */
     external: function (content: string): void {

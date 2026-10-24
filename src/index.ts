@@ -529,6 +529,49 @@ async function handleEditorRoute(
     return true;
   }
 
+  // Download → "this slide as an image": one slide (the deck reduced to it,
+  // as for a thumbnail) drawn by the headless browser at twice its size.
+  if (pathname === "/__png" && req.method === "POST") {
+    if (!sameOrigin(mode, req)) return forbidden(res);
+    let body: { html?: string; width?: number; height?: number; scale?: number };
+    try {
+      body = JSON.parse(await readBody(req));
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "bad request" }));
+      return true;
+    }
+    const html = typeof body.html === "string" ? body.html : "";
+    if (!html.trim()) {
+      res.writeHead(422, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "empty document" }));
+      return true;
+    }
+    const size = (v: unknown, dflt: number, max: number): number =>
+      typeof v === "number" && isFinite(v) ? Math.max(100, Math.min(max, Math.round(v))) : dflt;
+    const width = size(body.width, 1280, 3840);
+    const height = size(body.height, 720, 2400);
+    const scale = typeof body.scale === "number" && body.scale >= 1 && body.scale <= 3 ? body.scale : 2;
+    const browser = await findBrowser();
+    if (!browser) {
+      res.writeHead(501, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        error: "no browser",
+        detail: "Drawing a slide needs Chrome, Chromium, Edge, or Brave. Set DECKRUN_BROWSER to one.",
+      }));
+      return true;
+    }
+    try {
+      const png = await renderPngSerial(`${mode.origin}${stashDeck(html)}`, browser, width, height, scale);
+      res.writeHead(200, { "Content-Type": "image/png", "Content-Length": png.length, "Cache-Control": "no-store" });
+      res.end(png);
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "render failed", detail: (err as Error).message }));
+    }
+    return true;
+  }
+
   if (pathname.startsWith("/__chat") && req.method === "POST" && mode.chat && mode.file?.path) {
     // Same origin only: this route spends the person's Claude usage and
     // edits a file.

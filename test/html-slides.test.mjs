@@ -228,14 +228,22 @@ test("the editor ships the slide panel, and every inline script parses", async (
   const { generateEditorHtml } = await import("../dist/editor.js");
   const { SLIDE_PANEL_RUNTIME } = await import("../dist/slide-panel.js");
   const html = generateEditorHtml("nord", {}, "classic", "slide", { name: "talk.html", kind: "html", writable: true, watched: true });
-  for (const id of ["doc-view", "rail", "doc-notes-input", "dr-menu", "dr-newmenu", "dh-sorter", "dh-from"]) {
+  for (const id of ["doc-view", "rail", "doc-notes-input", "dr-menu", "dr-newmenu", "dh-sorter", "dh-from",
+    "dh-code", "dz-insert", "dz-view", "dz-props", "dz-overlay", "dz-menu", "dz-pop"]) {
     assert.ok(html.includes(`id="${id}"`), id);
   }
-  assert.ok(/<div id="doc-main">\s*<iframe id="frame-html"/.test(html), "the preview sits beside the rail");
+  assert.ok(/<div id="doc-main">\s*<div id="dz-stage">\s*<div id="dz-canvas"[^>]*>\s*<div id="dz-sizer">\s*<iframe id="frame-html"/.test(html),
+    "the preview sits on the design canvas, beside the rail");
+  assert.ok(/<\/div>\s*<aside id="dz-props"/.test(html), "the properties panel follows the canvas");
   assert.ok(html.includes("var DRSlides = (function htmlSlides()"));
   assert.ok(html.includes("window.deckrunSlidePanel = function slidePanel("));
-  const lower = SLIDE_PANEL_RUNTIME.toLowerCase();
-  assert.ok(!lower.includes("<!" + "--") && !lower.includes("<scr" + "ipt") && !lower.includes("</scr" + "ipt"));
+  assert.ok(html.includes("var DRDesign = (function designKit("));
+  assert.ok(html.includes("window.deckrunDesigner = function designer("));
+  const { DESIGN_RUNTIME } = await import("../dist/design.js");
+  for (const rt of [SLIDE_PANEL_RUNTIME, DESIGN_RUNTIME]) {
+    const lower = rt.toLowerCase();
+    assert.ok(!lower.includes("<!" + "--") && !lower.includes("<scr" + "ipt") && !lower.includes("</scr" + "ipt"));
+  }
   const scripts = [...html.matchAll(/<script(?![^>]*application\/json)[^>]*>([\s\S]*?)<\/script>/g)];
   assert.ok(scripts.length >= 2);
   for (const [, code] of scripts) assert.doesNotThrow(() => new vm.Script(code));
@@ -248,6 +256,7 @@ test("present from here opens the doc at a slide and steps a deck that ignores i
   const from = generateDocHtml("/?deck=1", "Talk", false, "nord", 2);
   assert.ok(from.includes('src="/?deck=1#3"'), "asked for by hash first");
   assert.ok(from.includes("DRSlides.goto(frame.contentWindow, 2)"));
+  assert.ok(from.includes("DRTransitions.attach(frame.contentWindow)"), "slide transitions play in the presenter");
   const scripts = [...from.matchAll(/<script(?![^>]*application\/json)[^>]*>([\s\S]*?)<\/script>/g)];
   for (const [, code] of scripts) assert.doesNotThrow(() => new vm.Script(code));
 });
